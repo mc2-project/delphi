@@ -1,0 +1,45 @@
+[package]
+name = "neural-network"
+version = "0.1.0"
+authors = [
+    "Pratyush Mishra",
+    "Ryan Lehmkuhl",
+    "Akshayaram Srinivasan",
+    "Wenting Zheng",
+    "Raluca Ada Popa",
+]
+description = "A library for convolutional neural networks as used in Delphi"
+repository = "https://github.com/mc2/delphi"
+keywords = ["cryptography", "finite fields", "machine learning", "neural networks"]
+categories = ["cryptography", "machine learning"]
+include = ["Cargo.toml", "src", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
+license = "MIT/Apache-2.0"
+
+[dependencies]
+algebra = { path = "../algebra" }
+crypto-primitives = { path = "../crypto-primitives" }
+serde = { version = "1", features = [ "derive" ] }
+ndarray = { version = "0.12", features = [ "serde-1" ] }
+rand = { version = "0.6" }
+npy = { version = "0.4" } 
+npy-derive = { version = "0.4" }
+
+num-traits = { version = "0.2" }
+tch = { version = "0.1.3" }
+
+[dev-dependencies]
+blake2 = "0.7"
+criterion = "0.2"
+rand_chacha = "0.1.1"
+
+[[bench]]
+name = "fully_connected"
+harness = false
+
+[[bench]]
+name = "convolution"
+harness = false
+
+[[bench]]
+name = "average_pooling"
+harness = false

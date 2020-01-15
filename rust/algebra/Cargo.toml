@@ -1,0 +1,47 @@
+[package]
+name = "algebra"
+version = "0.1.0"
+edition = "2018"
+authors = [
+    "Pratyush Mishra",
+    "Ryan Lehmkuhl",
+    "Akshayaram Srinivasan",
+    "Wenting Zheng",
+    "Raluca Ada Popa",
+]
+description = "A library for finite field arithmetic"
+repository = "https://github.com/mc2/delphi"
+keywords = ["cryptography", "finite fields"]
+categories = ["cryptography"]
+include = ["Cargo.toml", "src", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
+license = "MIT/Apache-2.0"
+
+################################# Dependencies ################################
+
+[dependencies]
+byteorder = { version = "1" }
+rand = { version = "0.6" }
+derivative = "1"
+
+bit-vec = "0.4.4"
+
+clippy = { version = "*", optional = true }
+
+failure = { version = "0.1.1" }
+failure_derive = { version = "0.1.1" }
+
+serde = { version = "1", features = [ "derive" ] }
+num-traits = { version = "0.2.6"}
+ndarray = { version = "0.12", features = [ "serde-1" ] }
+
+colored = { version = "1", optional = true }
+rayon = { version = "1", optional = true }
+
+
+[dev-dependencies]
+blake2 = "0.7"
+criterion = "0.2"
+rand_chacha = "0.1.1"
+
+[features]
+parallel = [ "rayon" ]

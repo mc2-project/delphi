@@ -1,0 +1,20 @@
+# Python
+**/__pycache__
+
+# Rust
+# *.lock
+**/target
+target
+**/*.rs.bk
+
+# C++
+**/SEALConfig.cmake
+**/SEALConfigVersion.cmake
+**/SEALTargets.cmake
+system/c++/SEAL/native/src/seal/util/config.h
+**/CMakeCache.txt
+**/CMakeFiles
+**/Makefile
+**/.config
+**/autom4te.cache/*
+**/cmake_install.cmake

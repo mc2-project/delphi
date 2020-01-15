@@ -1,0 +1,78 @@
+[package]
+name = "experiments"
+version = "0.1.0"
+edition = "2018"
+authors = [
+    "Pratyush Mishra",
+    "Ryan Lehmkuhl",
+    "Akshayaram Srinivasan",
+    "Wenting Zheng",
+    "Raluca Ada Popa",
+]
+description = "Experiments from the Delphi paper"
+repository = "https://github.com/mc2/delphi"
+keywords = ["cryptography", "finite fields", "garbled circuits", "secret sharing"]
+categories = ["cryptography"]
+include = ["Cargo.toml", "src", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
+license = "MIT/Apache-2.0"
+
+[dependencies]
+algebra = { path = "../algebra" }
+crypto-primitives = { path = "../crypto-primitives" }
+neural-network = { path = "../neural-network" }
+protocols = { path = "../protocols" }
+rand = { version = "0.6" }
+rand_chacha = { version = "0.1.1" }
+crossbeam = "0.7.1"
+tch = { version = "0.1.3" }
+rayon = {version = "1.0"}
+num_cpus = { version = "1.11.1" }
+
+[lib]
+name = "experiments"
+path = "src/lib.rs"
+
+[[bin]]
+name = "minionn-inference"
+path = "src/inference/minionn/inference.rs"
+
+[[bin]]
+name = "minionn-accuracy"
+path = "src/validation/minionn/validate.rs"
+
+[[bin]]
+name = "resnet32-client"
+path = "src/latency/resnet32/client.rs"
+
+[[bin]]
+name = "resnet32-server"
+path = "src/latency/resnet32/server.rs"
+
+[[bin]]
+name = "minionn-client"
+path = "src/latency/minionn/client.rs"
+
+[[bin]]
+name = "minionn-server"
+path = "src/latency/minionn/server.rs"
+
+[[bin]]
+name = "tput-client"
+path = "src/throughput/linear_only/client.rs"
+
+[[bin]]
+name = "tput-server"
+path = "src/throughput/linear_only/server.rs"
+
+[[bin]]
+name = "mnist-client"
+path = "src/latency/mnist/client.rs"
+
+[[bin]]
+name = "mnist-server"
+path = "src/latency/mnist/server.rs"
+
+
+
+[features]
+timer = ["protocols/timer"]

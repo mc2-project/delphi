@@ -1,0 +1,30 @@
+[workspace]
+
+members = [ 
+    "algebra", "bench-utils", "crypto-primitives", 
+    "neural-network", "protocols", "experiments",
+    "protocols-sys"
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+incremental = true
+debug = true
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+incremental = true
+debug = false
+rpath = false
+debug-assertions = false
+
+[profile.dev]
+opt-level = 0
+
+[profile.test]
+opt-level = 3
+debug-assertions = true
+incremental = true
+debug = true

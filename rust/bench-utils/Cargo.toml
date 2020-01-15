@@ -1,0 +1,22 @@
+[package]
+name = "bench-utils"
+version = "0.1.0"
+edition = "2018"
+authors = [
+    "Pratyush Mishra",
+    "Ryan Lehmkuhl",
+    "Akshayaram Srinivasan",
+    "Wenting Zheng",
+    "Raluca Ada Popa",
+]
+description = "Utilities for benchmarking in Delphi"
+repository = "https://github.com/mc2/delphi"
+categories = ["cryptography"]
+include = ["Cargo.toml", "src", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
+license = "MIT/Apache-2.0"
+
+[dependencies]
+colored = { version = "1", optional = true }
+
+[features]
+timer = [ "colored" ]

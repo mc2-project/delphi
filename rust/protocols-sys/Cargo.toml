@@ -1,0 +1,26 @@
+[package]
+name = "protocols-sys"
+version = "0.1.0"
+edition = "2018"
+authors = [
+    "Pratyush Mishra",
+    "Ryan Lehmkuhl",
+    "Akshayaram Srinivasan",
+    "Wenting Zheng",
+    "Raluca Ada Popa",
+]
+description = "FFI wrapper around the C++ library used in Delphi"
+repository = "https://github.com/mc2/delphi"
+keywords = ["cryptography", "finite fields", "homomorphic encryption",]
+categories = ["cryptography"]
+include = ["Cargo.toml", "src", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
+license = "MIT/Apache-2.0"
+
+[build-dependencies]
+bindgen = { version = "0.52.0" }
+cmake = { version = "0.1.42" }
+
+[dependencies]
+neural-network = { path="../neural-network" }
+algebra= { path="../algebra" }
+ndarray = { version = "0.12", features = [ "serde-1" ] }
