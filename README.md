@@ -131,7 +131,7 @@ Unless you explicitly state otherwise, any contribution submitted for inclusion 
 ## Reference paper
 
 [_Delphi: A Cryptographic Inference Service for Neural Networks_][delphi]    
-[Pratyush Mishra](https://www.github.com/pratyush), [Ryan Lehmkuhl](https://www.github.com/ryanleh), Akshayaram Srinivasan, Wenting Zheng, and  Raluca Ada Popa
+[Pratyush Mishra](https://www.github.com/pratyush), [Ryan Lehmkuhl](https://www.github.com/ryanleh), Akshayaram Srinivasan, Wenting Zheng, and  Raluca Ada Popa    
 *Usenix Security Symposium 2020*
 
 ## Acknowledgements
@@ -141,6 +141,3 @@ the National Science Foundation;
 and donations from Sloan Foundation, Bakar and Hellman Fellows Fund, Alibaba, Amazon Web Services, Ant Financial, Arm, Capital One, Ericsson, Facebook, Google, Intel, Microsoft, Scotiabank, Splunk and VMware
 
 Some parts of the finite field arithmetic infrastructure in the `algebra` crate have been adapted from code in the [`algebra`](https://github.com/scipr-lab/zexe) crate.
-
-
-
