@@ -126,7 +126,7 @@ Delphi is licensed under either of the following licenses, at your discretion.
 
 Unless you explicitly state otherwise, any contribution submitted for inclusion in Delphi by you shall be dual licensed as above (as defined in the Apache v2 License), without any additional terms or conditions.
 
-[delphi]: https://www.usenix.org/system/files/sec20spring_mishra_prepub.pdf
+[delphi]: https://eprint.iacr.org/2020/050.pdf
 
 ## Reference paper
 
