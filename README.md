@@ -42,7 +42,7 @@ rustup install nightly
 After that, use `cargo`, the standard Rust build tool, to build the library:
 ```bash
 git clone https://github.com/mc2-project/delphi
-cd delphi
+cd delphi/rust
 cargo +nightly build --release
 ```
 
