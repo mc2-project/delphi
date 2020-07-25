@@ -232,7 +232,9 @@ mod test {
     }
 
     #[test]
-    pub fn test_relu() {
+    pub(crate) fn test_relu() {
+        // TODO: There is currently an off-by-one in this test that causes it
+        // to fail occasionally
         let mut rng = thread_rng();
         let n = 42;
         let q = 2;
