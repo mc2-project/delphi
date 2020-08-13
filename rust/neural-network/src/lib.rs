@@ -1,3 +1,4 @@
+#![allow(incomplete_features)]
 #![feature(specialization)]
 use crate::tensors::{Input, Output};
 use ndarray::ArrayView;

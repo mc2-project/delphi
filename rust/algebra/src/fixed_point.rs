@@ -134,7 +134,7 @@ impl<P: FixedPointParameters> FixedPoint<P> {
 
     #[inline]
     pub const fn size_in_bits() -> u8 {
-        (P::MANTISSA_CAPACITY + P::EXPONENT_CAPACITY)
+        P::MANTISSA_CAPACITY + P::EXPONENT_CAPACITY
     }
 
     #[inline]
@@ -254,7 +254,7 @@ pub fn discretized_cos<P: FixedPointParameters>(inp: FixedPoint<P>) -> FixedPoin
     // (sum.signed_truncate_by(7)).double()
     // sum
     // TODO: fix for arbitrary sizes (mostly wrt doubling)
-    (sum.signed_truncate_by(2))
+    sum.signed_truncate_by(2)
 }
 
 impl<P: FixedPointParameters> Display for FixedPoint<P> {

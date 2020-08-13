@@ -51,7 +51,7 @@ pub fn nn_client<R: RngCore + CryptoRng>(
         for _ in 0..num_clients {
             let result = s.spawn(|_| {
                 let mut rng = thread_rng();
-                let index: usize = rng.next_u64() as usize % 4;
+                let _index: usize = rng.next_u64() as usize % 4;
 
                 let architecture = &architectures[0].1;
                 let input = &inputs[0];
