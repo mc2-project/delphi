@@ -13,7 +13,7 @@ pub mod linear_layer;
 pub mod neural_network;
 pub mod quad_approx;
 
-mod bytes;
+pub mod bytes;
 
 #[cfg(test)]
 mod tests;

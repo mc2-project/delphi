@@ -1,5 +1,8 @@
 use clap::{App, Arg, ArgMatches};
-use experiments::mnist::construct_mnist;
+use experiments::{
+    mnist::construct_mnist,
+    minionn::construct_minionn,
+};
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 
@@ -11,6 +14,14 @@ const RANDOMNESS: [u8; 32] = [
 
 fn get_args() -> ArgMatches<'static> {
     App::new("input-auth-client")
+        .arg(
+            Arg::with_name("model")
+                .short("m")
+                .long("model")
+                .takes_value(true)
+                .help("MNIST (0), MiniONN(1)")
+                .required(true),
+        )
         .arg(
             Arg::with_name("ip")
                 .short("i")
@@ -39,7 +50,12 @@ fn main() {
     let port = args.value_of("port").unwrap_or("8000");
     let server_addr = format!("{}:{}", ip, port);
 
-    let network = construct_mnist(Some(&vs.root()), 1, 0, &mut rng);
+    let model = clap::value_t!(args.value_of("model"), usize).unwrap();
+    let network = match model {
+        0 => construct_mnist(Some(&vs.root()), 1, 0, &mut rng),
+        1 => construct_minionn(Some(&vs.root()), 1, 0, &mut rng),
+        _ => panic!(),
+    };
     let architecture = (&network).into();
 
     experiments::latency::client::nn_client(&server_addr, architecture, &mut rng);

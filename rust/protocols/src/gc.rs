@@ -39,7 +39,7 @@ pub type ClientGcMsgRcv = InMessage<(Vec<GarbledCircuit>, Vec<Wire>), ReluProtoc
 pub type ServerLabelMsgSend<'a> = OutMessage<'a, [Vec<Wire>], ReluProtocolType>;
 pub type ClientLabelMsgRcv = InMessage<Vec<Vec<Wire>>, ReluProtocolType>;
 
-fn make_relu<P: FixedPointParameters>() -> Circuit
+pub fn make_relu<P: FixedPointParameters>() -> Circuit
 where
     <P::Field as PrimeField>::Params: Fp64Parameters,
     P::Field: PrimeField<BigInt = <<P::Field as PrimeField>::Params as FpParameters>::BigInt>,
@@ -49,7 +49,7 @@ where
     b.finish()
 }
 
-fn u128_from_share<P: FixedPointParameters>(s: AdditiveShare<P>) -> u128
+pub fn u128_from_share<P: FixedPointParameters>(s: AdditiveShare<P>) -> u128
 where
     <P::Field as PrimeField>::Params: Fp64Parameters,
     P::Field: PrimeField<BigInt = BigInteger64>,

@@ -116,7 +116,7 @@ where
     // Output randomness to share the input in the online phase, and an additive
     // share of the output of after the linear function has been applied.
     // Basically, r and -(Lr + s).
-    pub(crate) fn offline_client_protocol<'a, R: Read, W: Write, RNG: RngCore + CryptoRng>(
+    pub fn offline_client_protocol<'a, R: Read, W: Write, RNG: RngCore + CryptoRng>(
         reader: R,
         writer: &mut W,
         input_dims: (usize, usize, usize, usize),
