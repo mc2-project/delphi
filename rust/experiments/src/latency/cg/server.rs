@@ -48,5 +48,5 @@ fn main() {
         _ => panic!(),
     };
 
-    experiments::latency::server::nn_server(&server_addr, network, &mut rng);
+    experiments::latency::server::cg(&server_addr, network, &mut rng);
 }

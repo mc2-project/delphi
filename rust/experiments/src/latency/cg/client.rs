@@ -58,5 +58,5 @@ fn main() {
     };
     let architecture = (&network).into();
 
-    experiments::latency::client::nn_client(&server_addr, architecture, &mut rng);
+    experiments::latency::client::cg(&server_addr, architecture, &mut rng);
 }
