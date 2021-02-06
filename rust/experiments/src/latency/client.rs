@@ -32,12 +32,21 @@ use std::{
     convert::TryFrom,
     collections::BTreeMap,
     io::{BufReader, BufWriter, Write},
-    net::TcpStream
+    net::TcpStream,
+    sync::{Arc, Mutex},
 };
 use ocelot::ot::{AlszReceiver as OTReceiver, AlszSender as OTSender, Receiver, Sender};
 use protocols_sys::{ClientFHE, ServerFHE, key_share::KeyShare, client_keygen};
 use rayon::prelude::*;
+use rand::SeedableRng;
+use rand_chacha::ChaChaRng;
 use scuttlebutt::Channel;
+
+const RANDOMNESS: [u8; 32] = [
+    0x11, 0xe0, 0x8f, 0xbc, 0x89, 0xa7, 0x34, 0x01, 0x45, 0x86, 0x82, 0xb6, 0x51, 0xda, 0xf4,
+    0x76, 0x5d, 0xc9, 0x8d, 0xea, 0x23, 0xf2, 0x90, 0x8f, 0x9d, 0x03, 0xf2, 0x77, 0xd3, 0x4a,
+    0x52, 0xd2,
+];
 
 pub fn nn_client<R: RngCore + CryptoRng>(
     server_addr: &str,
@@ -76,31 +85,20 @@ pub fn nn_client<R: RngCore + CryptoRng>(
 }
 
 
-pub fn cg<R: RngCore + CryptoRng>(
-    server_addr: &str,
-    architecture: NeuralArchitecture<TenBitAS, TenBitExpFP>,
+fn cg_helper<R: RngCore + CryptoRng>(
+    layers: &[usize],
+    architecture: &NeuralArchitecture<TenBitAS, TenBitExpFP>,
+    mut cfhe: Option<ClientFHE>,
+    mut reader: BufReader<TcpStream>,
+    mut writer: BufWriter<TcpStream>,
     rng: &mut R,
 ) {
-    let stream = TcpStream::connect(server_addr).expect("Client connection failed!");
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut writer = BufWriter::new(stream);
-
-    let key_time = timer_start!(|| "Keygen");
-    let mut key_share = KeyShare::new();
-    let (cfhe, keys_vec) = key_share.generate();
-    let mut cfhe = Some(cfhe);
-
-    let sent_message = OfflineClientKeySend::new(&keys_vec);
-    protocols::bytes::serialize(&mut writer, &sent_message).unwrap();
-    timer_end!(key_time);
-
     let mut in_shares = BTreeMap::new();
     let mut out_shares = BTreeMap::new();
-    let linear_time = timer_start!(|| "Linear layers offline phase");
-    for (i, layer) in architecture.layers.iter().enumerate() {
-        match layer {
-            LayerInfo::NLL(dims, NonLinearLayerInfo::ReLU) => { },
-            LayerInfo::NLL(dims, NonLinearLayerInfo::PolyApprox { .. }) => { },
+    for i in layers.iter() {
+        match &architecture.layers[*i] {
+            LayerInfo::NLL(dims, NonLinearLayerInfo::ReLU) => panic!(),
+            LayerInfo::NLL(dims, NonLinearLayerInfo::PolyApprox { .. }) => panic!(),
             LayerInfo::LL(dims, linear_layer_info) => {
                 let (in_share, mut out_share) = match &linear_layer_info {
                     LinearLayerInfo::Conv2d { .. } | LinearLayerInfo::FullyConnected => {
@@ -116,7 +114,7 @@ pub fn cg<R: RngCore + CryptoRng>(
                     },
                     _ => {
                         // AvgPool and Identity don't require an offline communication
-                        if out_shares.keys().any(|k| k == &(i - 1)) {
+                        if out_shares.keys().any(|k| *k == &(i - 1)) {
                             // If the layer comes after a linear layer, apply the function to
                             // the last layer's output share
                             let prev_output_share = out_shares.get(&(i - 1)).unwrap();
@@ -147,6 +145,66 @@ pub fn cg<R: RngCore + CryptoRng>(
             },
         }
     }
+}
+
+
+pub fn cg<R: RngCore + CryptoRng>(
+    server_addr: &str,
+    architecture: NeuralArchitecture<TenBitAS, TenBitExpFP>,
+    rng: &mut R,
+) {
+    let stream = TcpStream::connect(server_addr).expect("Client connection failed!");
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut writer = BufWriter::new(stream);
+
+    let stream = TcpStream::connect(server_addr).expect("Client connection failed!");
+    let mut reader2 = BufReader::new(stream.try_clone().unwrap());
+    let mut writer2 = BufWriter::new(stream);
+
+    let key_time = timer_start!(|| "Keygen");
+    let mut key_share = KeyShare::new();
+    let (cfhe, keys_vec) = key_share.generate();
+    let mut cfhe = Some(cfhe);
+
+    let sent_message = OfflineClientKeySend::new(&keys_vec);
+    protocols::bytes::serialize(&mut writer, &sent_message).unwrap();
+    timer_end!(key_time);
+
+    let key_time = timer_start!(|| "Keygen");
+    let mut key_share = KeyShare::new();
+    let (cfhe_2, keys_vec) = key_share.generate();
+    let mut cfhe_2 = Some(cfhe_2);
+
+    let sent_message = OfflineClientKeySend::new(&keys_vec);
+    protocols::bytes::serialize(&mut writer, &sent_message).unwrap();
+    timer_end!(key_time);
+
+    // TODO: Wrap in Mutex
+//    let mut in_shares = Arc::new(Mutex::new(BTreeMap::new()));
+//    let mut out_shares = Arc::new(Mutex::new(BTreeMap::new()));
+
+    // TODO: Divide even and odd between two threads
+
+    let (t1_layers, t2_layers) = match architecture.layers.len() {
+        9 => (vec![0, 5, 6], vec![2, 3, 8]),
+        17 => (vec![0, 4, 5, 12, 14], vec![2, 7, 9, 10, 16]),
+        _ => panic!(),
+    };
+    
+    let linear_time = timer_start!(|| "Linear layers offline phase");
+    crossbeam::scope(|s| {
+        let architecture_1 = &architecture;
+        let architecture_2 = &architecture;
+        s.spawn(move |_| {
+            let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
+            cg_helper(&t1_layers, architecture_1, cfhe, reader, writer, &mut rng);
+        });
+        
+        s.spawn(move |_| {
+            let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
+            cg_helper(&t2_layers, architecture_2, cfhe_2, reader2, writer2, &mut rng);
+        });
+    });
     timer_end!(linear_time);
 }
 

@@ -37,7 +37,15 @@ use std::{
 use ocelot::ot::{AlszReceiver as OTReceiver, AlszSender as OTSender, Receiver, Sender};
 use protocols_sys::{ClientFHE, ServerFHE, key_share::KeyShare, client_keygen};
 use rayon::prelude::*;
+use rand::SeedableRng;
+use rand_chacha::ChaChaRng;
 use scuttlebutt::Channel;
+
+const RANDOMNESS: [u8; 32] = [
+    0x11, 0xe0, 0x8f, 0xbc, 0x89, 0xa7, 0x34, 0x01, 0x45, 0x86, 0x82, 0xb6, 0x51, 0xda, 0xf4,
+    0x76, 0x5d, 0xc9, 0x8d, 0xea, 0x23, 0xf2, 0x90, 0x8f, 0x9d, 0x03, 0xf2, 0x77, 0xd3, 0x4a,
+    0x52, 0xd2,
+];
 
 pub fn nn_server<R: RngCore + CryptoRng>(
     server_addr: &str,
@@ -69,31 +77,17 @@ pub fn nn_server<R: RngCore + CryptoRng>(
     };
 }
 
-pub fn cg<R: RngCore + CryptoRng>(
-    server_addr: &str,
-    nn: NeuralNetwork<TenBitAS, TenBitExpFP>,
+fn cg_helper<R: RngCore + CryptoRng>(
+    layers: &[usize],
+    nn: &NeuralNetwork<TenBitAS, TenBitExpFP>,
+    mut sfhe: Option<ServerFHE>,
+    mut reader: BufReader<TcpStream>,
+    mut writer: BufWriter<TcpStream>,
     rng: &mut R,
 ) {
-    let listener = TcpListener::bind(server_addr).unwrap();
-    let stream = listener
-        .incoming()
-        .next()
-        .unwrap()
-        .expect("server connection failed!");
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut writer = BufWriter::new(stream);
-
-    let key_time = timer_start!(|| "Keygen");
-    let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut reader).unwrap();
-    let mut key_share = KeyShare::new();
-    let mut sfhe = Some(key_share.receive(keys.msg()));
-    timer_end!(key_time);
-
     let mut linear_state = BTreeMap::new();
-
-    let linear_time = timer_start!(|| "Linear layers offline phase");
-    for (i, layer) in nn.layers.iter().enumerate() {
-        match layer {
+    for i in layers.iter() {
+        match &nn.layers[*i] {
             Layer::NLL(NonLinearLayer::ReLU(dims)) => { },
             Layer::NLL(NonLinearLayer::PolyApprox { dims, .. }) => { },
             Layer::LL(layer) => {
@@ -117,6 +111,63 @@ pub fn cg<R: RngCore + CryptoRng>(
             },
         }
     }
+}
+
+pub fn cg<R: RngCore + CryptoRng>(
+    server_addr: &str,
+    nn: NeuralNetwork<TenBitAS, TenBitExpFP>,
+    rng: &mut R,
+) {
+    let listener = TcpListener::bind(server_addr).unwrap();
+    let stream = listener
+        .incoming()
+        .next()
+        .unwrap()
+        .expect("server connection failed!");
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut writer = BufWriter::new(stream);
+
+    let stream = listener
+        .incoming()
+        .next()
+        .unwrap()
+        .expect("server connection failed!");
+    let mut reader2 = BufReader::new(stream.try_clone().unwrap());
+    let mut writer2 = BufWriter::new(stream);
+
+    let key_time = timer_start!(|| "Keygen");
+    let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut reader).unwrap();
+    let mut key_share = KeyShare::new();
+    let mut sfhe = Some(key_share.receive(keys.msg()));
+    timer_end!(key_time);
+
+    let key_time = timer_start!(|| "Keygen");
+    let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut reader).unwrap();
+    let mut key_share = KeyShare::new();
+    let mut sfhe_2 = Some(key_share.receive(keys.msg()));
+    timer_end!(key_time);
+
+    let (t1_layers, t2_layers) = match nn.layers.len() {
+        9 => (vec![0, 5, 6], vec![2, 3, 8]),
+        17 => (vec![0, 4, 5, 12, 14], vec![2, 7, 9, 10, 16]),
+        _ => panic!(),
+    };
+    
+
+    let linear_time = timer_start!(|| "Linear layers offline phase");
+    crossbeam::scope(|s| {
+        let nn_1 = &nn;
+        let nn_2 = &nn;
+        s.spawn(move |_| {
+            let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
+            cg_helper(&t1_layers, nn_1, sfhe, reader, writer, &mut rng);
+        });
+        
+        s.spawn(move |_| {
+            let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
+            cg_helper(&t2_layers, nn_2, sfhe_2, reader2, writer2, &mut rng);
+        });
+    });
     timer_end!(linear_time);
 }
 
