@@ -17,13 +17,13 @@ use nn::{
 };
 
 pub mod latency;
-pub mod inference;
-pub mod linear_only;
+//pub mod inference;
+//pub mod linear_only;
 pub mod minionn;
 pub mod mnist;
-pub mod resnet32;
-pub mod throughput;
-pub mod validation;
+//pub mod resnet32;
+//pub mod throughput;
+//pub mod validation;
 
 pub struct TenBitExpParams {}
 

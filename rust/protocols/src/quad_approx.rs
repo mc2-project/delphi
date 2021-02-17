@@ -7,6 +7,7 @@ use algebra::{
 };
 use crypto_primitives::{BeaversMul, Triple};
 use protocols_sys::*;
+use io_utils::IMuxSync;
 use rand::{CryptoRng, RngCore};
 use std::{
     io::{Read, Write},
@@ -24,12 +25,12 @@ where
 {
     pub fn offline_server_protocol<
         M: BeaversMul<FixedPoint<P>>,
-        R: Read,
-        W: Write,
+        R: Read + Send,
+        W: Write + Send,
         RNG: RngCore + CryptoRng,
     >(
-        reader: R,
-        writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         sfhe: &ServerFHE,
         num_approx: usize,
         rng: &mut RNG,
@@ -45,12 +46,12 @@ where
 
     pub fn offline_client_protocol<
         M: BeaversMul<FixedPoint<P>>,
-        R: Read,
-        W: Write,
+        R: Read + Send,
+        W: Write + Send,
         RNG: RngCore + CryptoRng,
     >(
-        reader: R,
-        writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         cfhe: &ClientFHE,
         num_approx: usize,
         rng: &mut RNG,
@@ -66,8 +67,8 @@ where
 
     pub fn online_server_protocol<M: BeaversMul<FixedPoint<P>>, R: Read + Send, W: Write + Send>(
         party_index: usize,
-        reader: R,
-        writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         polynomial: &Polynomial<FixedPoint<P>>,
         x_s: &[AdditiveShare<P>],
         triples: &[Triple<P::Field>],
@@ -105,8 +106,8 @@ where
 
     pub fn online_client_protocol<M: BeaversMul<FixedPoint<P>>, R: Read + Send, W: Write + Send>(
         party_index: usize,
-        reader: R,
-        writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         polynomial: &Polynomial<FixedPoint<P>>,
         x_s: &[AdditiveShare<P>],
         triples: &[Triple<P::Field>],

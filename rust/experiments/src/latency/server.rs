@@ -1,5 +1,5 @@
 use crate::*;
-use bench_utils::{timer_end, timer_start};
+use bench_utils::*;
 use algebra::{
     fields::PrimeField,
     fixed_point::{FixedPoint, FixedPointParameters},
@@ -28,6 +28,7 @@ use protocols::{
     linear_layer::{LinearProtocol, OfflineServerKeyRcv},
     neural_network::NNProtocol,
 };
+use io_utils::{CountingIO, IMuxSync};
 use std::{
     convert::TryFrom,
     collections::BTreeMap,
@@ -47,42 +48,56 @@ const RANDOMNESS: [u8; 32] = [
     0x52, 0xd2,
 ];
 
+pub fn server_connect(
+    addr: &str,
+) -> (
+    IMuxSync<CountingIO<BufReader<TcpStream>>>,
+    IMuxSync<CountingIO<BufWriter<TcpStream>>>,
+) {
+    let listener = TcpListener::bind("0.0.0.0:8000").unwrap();
+    let mut incoming = listener.incoming();
+    let mut readers = Vec::with_capacity(16);
+    let mut writers = Vec::with_capacity(16);
+    for _ in 0..16 {
+        let stream = incoming.next().unwrap().unwrap();
+        readers.push(CountingIO::new(BufReader::new(stream.try_clone().unwrap())));
+        writers.push(CountingIO::new(BufWriter::new(stream)));
+    }
+    (IMuxSync::new(readers), IMuxSync::new(writers))
+}
+
 pub fn nn_server<R: RngCore + CryptoRng>(
     server_addr: &str,
     nn: NeuralNetwork<TenBitAS, TenBitExpFP>,
     rng: &mut R,
 ) {
-    let server_listener = TcpListener::bind(server_addr).unwrap();
-    let server_offline_state = {
-        let stream = server_listener
-            .incoming()
-            .next()
-            .unwrap()
-            .expect("server connection failed!");
-        let write_stream = stream.try_clone().unwrap();
-        let read_stream = BufReader::new(stream);
-        NNProtocol::offline_server_protocol(read_stream, write_stream, &nn, rng).unwrap()
+    let (server_state, offline_read, offline_write) = {
+        let (mut reader, mut writer) = server_connect(server_addr);
+        (
+            NNProtocol::offline_server_protocol(&mut reader, &mut writer, &nn, rng).unwrap(),
+            reader.count(),
+            writer.count(),
+        )
     };
 
-    let _ = {
-        let stream = server_listener
-            .incoming()
-            .next()
-            .unwrap()
-            .expect("server connection failed!");
-        let write_stream = stream.try_clone().unwrap();
-        let read_stream = BufReader::new(stream);
-        NNProtocol::online_server_protocol(read_stream, write_stream, &nn, &server_offline_state)
-            .unwrap()
+    let (_, online_read, online_write) = {
+        let (mut reader, mut writer) = server_connect(server_addr);
+        (
+            NNProtocol::online_server_protocol(&mut reader, &mut writer, &nn, &server_state).unwrap(),
+                reader.count(),
+                writer.count(),
+        )
     };
+    add_to_trace!(|| "Offline Communication", || format!("Read {} bytes\nWrote {} bytes", offline_read, offline_write));
+    add_to_trace!(|| "Online Communication", || format!("Read {} bytes\nWrote {} bytes", online_read, online_write));
 }
 
 fn cg_helper<R: RngCore + CryptoRng>(
     layers: &[usize],
     nn: &NeuralNetwork<TenBitAS, TenBitExpFP>,
     mut sfhe: Option<ServerFHE>,
-    mut reader: BufReader<TcpStream>,
-    mut writer: BufWriter<TcpStream>,
+    reader: &mut IMuxSync<CountingIO<BufReader<TcpStream>>>,
+    writer: &mut IMuxSync<CountingIO<BufWriter<TcpStream>>>,
     rng: &mut R,
 ) {
     let mut linear_state = BTreeMap::new();
@@ -94,8 +109,8 @@ fn cg_helper<R: RngCore + CryptoRng>(
                 let randomizer = match &layer {
                     LinearLayer::Conv2d { .. } | LinearLayer::FullyConnected { .. } => {
                         LinearProtocol::offline_server_protocol(
-                            &mut reader,
-                            &mut writer,
+                            reader,
+                            writer,
                             &layer,
                             rng,
                             &mut sfhe,
@@ -118,34 +133,22 @@ pub fn cg<R: RngCore + CryptoRng>(
     nn: NeuralNetwork<TenBitAS, TenBitExpFP>,
     rng: &mut R,
 ) {
-    let listener = TcpListener::bind(server_addr).unwrap();
-    let stream = listener
-        .incoming()
-        .next()
-        .unwrap()
-        .expect("server connection failed!");
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut writer = BufWriter::new(stream);
-
-    let stream = listener
-        .incoming()
-        .next()
-        .unwrap()
-        .expect("server connection failed!");
-    let mut reader2 = BufReader::new(stream.try_clone().unwrap());
-    let mut writer2 = BufWriter::new(stream);
+    let (mut r1, mut w1) = server_connect(server_addr);
+    let (mut r2, mut w2) = server_connect(server_addr);
 
     let key_time = timer_start!(|| "Keygen");
-    let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut reader).unwrap();
+    let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut r1).unwrap();
     let mut key_share = KeyShare::new();
     let mut sfhe = Some(key_share.receive(keys.msg()));
     timer_end!(key_time);
 
     let key_time = timer_start!(|| "Keygen");
-    let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut reader).unwrap();
+    let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut r1).unwrap();
     let mut key_share = KeyShare::new();
     let mut sfhe_2 = Some(key_share.receive(keys.msg()));
     timer_end!(key_time);
+
+    r1.reset();
 
     let (t1_layers, t2_layers) = match nn.layers.len() {
         9 => (vec![0, 5, 6], vec![2, 3, 8]),
@@ -156,37 +159,36 @@ pub fn cg<R: RngCore + CryptoRng>(
 
     let linear_time = timer_start!(|| "Linear layers offline phase");
     crossbeam::scope(|s| {
+        let r1 = &mut r1;
+        let r2 = &mut r2;
+        let w1 = &mut w1;
+        let w2 = &mut w2;
         let nn_1 = &nn;
         let nn_2 = &nn;
         s.spawn(move |_| {
             let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
-            cg_helper(&t1_layers, nn_1, sfhe, reader, writer, &mut rng);
+            cg_helper(&t1_layers, nn_1, sfhe, r1, w1, &mut rng);
         });
         
         s.spawn(move |_| {
             let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
-            cg_helper(&t2_layers, nn_2, sfhe_2, reader2, writer2, &mut rng);
+            cg_helper(&t2_layers, nn_2, sfhe_2, r2, w2, &mut rng);
         });
     });
     timer_end!(linear_time);
+    add_to_trace!(|| "Communication", || format!("Read {} bytes\nWrote {} bytes", r1.count() + r2.count(), w1.count() + w2.count()));
 }
 
 
 pub fn gc<R: RngCore + CryptoRng>(server_addr: &str, number_of_relus: usize, rng: &mut R) {
-    let listener = TcpListener::bind(server_addr).unwrap();
-    let stream = listener
-        .incoming()
-        .next()
-        .unwrap()
-        .expect("server connection failed!");
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut writer = BufWriter::new(stream);
+    let (mut reader, mut writer) = server_connect(server_addr);
 
     let key_time = timer_start!(|| "Keygen");
     let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut reader).unwrap();
     let mut key_share = KeyShare::new();
     let mut sfhe = Some(key_share.receive(keys.msg()));
     timer_end!(key_time);
+    reader.reset();
 
     let start_time = timer_start!(|| "ReLU offline protocol");
 
@@ -257,13 +259,21 @@ pub fn gc<R: RngCore + CryptoRng>(server_addr: &str, number_of_relus: usize, rng
     }
     timer_end!(send_gc_time);
 
+    add_to_trace!(|| "GC Communication", || format!("Read {} bytes\nWrote {} bytes", reader.count(), writer.count()));
+    reader.reset();
+    writer.reset();
+
     if number_of_relus != 0 {
+        let r = reader.get_mut_ref().remove(0);
+        let w = writer.get_mut_ref().remove(0);
+
         let ot_time = timer_start!(|| "OTs");
-        let mut channel = Channel::new(&mut reader, &mut writer);
+        let mut channel = Channel::new(r, w);
         let mut ot = OTSender::init(&mut channel, rng).unwrap();
         ot.send(&mut channel, labels.as_slice(), rng).unwrap();
         timer_end!(ot_time);
     }
 
     timer_end!(start_time);
+    add_to_trace!(|| "OT Communication", || format!("Read {} bytes\nWrote {} bytes", reader.count(), writer.count()));
 }

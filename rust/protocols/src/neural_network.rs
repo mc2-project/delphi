@@ -16,6 +16,8 @@ use algebra::{
     FpParameters, PrimeField,
 };
 
+use io_utils::IMuxSync;
+
 use neural_network::{
     layers::*,
     tensors::{Input, Output},
@@ -124,9 +126,9 @@ where
     <P::Field as PrimeField>::Params: Fp64Parameters,
     P::Field: PrimeField<BigInt = <<P::Field as PrimeField>::Params as FpParameters>::BigInt>,
 {
-    pub fn offline_server_protocol<R: Read, W: Write, RNG: CryptoRng + RngCore>(
-        mut reader: R,
-        mut writer: W,
+    pub fn offline_server_protocol<R: Read + Send, W: Write + Send, RNG: CryptoRng + RngCore>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         neural_network: &NeuralNetwork<AdditiveShare<P>, FixedPoint<P>>,
         rng: &mut RNG,
     ) -> Result<ServerState<P>, bincode::Error> {
@@ -151,8 +153,8 @@ where
                     let randomizer = match &layer {
                         LinearLayer::Conv2d { .. } | LinearLayer::FullyConnected { .. } => {
                             LinearProtocol::offline_server_protocol(
-                                &mut reader,
-                                &mut writer,
+                                reader,
+                                writer,
                                 &layer,
                                 rng,
                                 &mut sfhe_op,
@@ -175,7 +177,7 @@ where
         let crate::gc::ServerState {
             encoders: relu_encoders,
             output_randomizers: relu_output_randomizers,
-        } = ReluProtocol::<P>::offline_server_protocol(&mut reader, &mut writer, num_relu, rng)?;
+        } = ReluProtocol::<P>::offline_server_protocol(reader, writer, num_relu, rng)?;
         timer_end!(relu_time);
 
         let approx_time = timer_start!(|| format!(
@@ -183,8 +185,8 @@ where
             num_approx
         ));
         let approx_state = QuadApproxProtocol::offline_server_protocol::<FPBeaversMul<P>, _, _, _>(
-            &mut reader,
-            &mut writer,
+            reader,
+            writer,
             &(sfhe_op.unwrap()),
             num_approx,
             rng,
@@ -199,9 +201,9 @@ where
         })
     }
 
-    pub fn offline_client_protocol<R: Read, W: Write, RNG: RngCore + CryptoRng>(
-        mut reader: R,
-        mut writer: W,
+    pub fn offline_client_protocol<R: Read + Send, W: Write + Send, RNG: RngCore + CryptoRng>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         neural_network_architecture: &NeuralArchitecture<AdditiveShare<P>, FixedPoint<P>>,
         rng: &mut RNG,
     ) -> Result<ClientState<P>, bincode::Error> {
@@ -231,8 +233,8 @@ where
                     let (in_share, mut out_share) = match &linear_layer_info {
                         LinearLayerInfo::Conv2d { .. } | LinearLayerInfo::FullyConnected => {
                             LinearProtocol::<P>::offline_client_protocol(
-                                &mut reader,
-                                &mut writer,
+                                reader,
+                                writer,
                                 dims.input_dimensions(),
                                 dims.output_dimensions(),
                                 &linear_layer_info,
@@ -299,8 +301,8 @@ where
             server_randomizer_labels: randomizer_labels,
             client_input_labels: relu_labels,
         } = ReluProtocol::<P>::offline_client_protocol(
-            &mut reader,
-            &mut writer,
+            reader,
+            writer,
             num_relu,
             current_layer_shares.as_slice(),
             rng,
@@ -336,8 +338,8 @@ where
             num_approx
         ));
         let approx_state = QuadApproxProtocol::offline_client_protocol::<FPBeaversMul<P>, _, _, _>(
-            &mut reader,
-            &mut writer,
+            reader,
+            writer,
             &(cfhe_op.unwrap()),
             num_approx,
             rng,
@@ -355,9 +357,9 @@ where
         })
     }
 
-    pub fn online_server_protocol<R: Read + Send, W: Write + Send>(
-        mut reader: R,
-        mut writer: W,
+    pub fn online_server_protocol<R: Read + Send, W: Write + Send + Send>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         neural_network: &NeuralNetwork<AdditiveShare<P>, FixedPoint<P>>,
         state: &ServerState<P>,
     ) -> Result<(), bincode::Error> {
@@ -387,7 +389,7 @@ where
                     let layer_encoders =
                         &state.relu_encoders[num_consumed_relus..(num_consumed_relus + layer_size)];
                     ReluProtocol::online_server_protocol(
-                        &mut writer,
+                        writer,
                         &next_layer_input.as_slice().unwrap(),
                         layer_encoders,
                     )?;
@@ -411,8 +413,8 @@ where
                     let shares_of_eval =
                         QuadApproxProtocol::online_server_protocol::<FPBeaversMul<P>, _, _>(
                             SERVER, // party_index: 2
-                            &mut reader,
-                            &mut writer,
+                            reader,
+                            writer,
                             &poly,
                             next_layer_input.as_slice().unwrap(),
                             triples,
@@ -441,7 +443,7 @@ where
                     }
                     next_layer_input = Output::zeros(layer.output_dimensions());
                     LinearProtocol::online_server_protocol(
-                        &mut reader,
+                        reader,
                         layer,
                         layer_randomizer,
                         &next_layer_derandomizer,
@@ -460,13 +462,14 @@ where
         }
         timer_end!(start_time);
         let sent_message = MsgSend::new(&next_layer_input);
-        bincode::serialize_into(&mut writer, &sent_message)
+        crate::bytes::serialize(writer, &sent_message)?;
+        Ok(())
     }
 
     /// Outputs shares for the next round's input.
-    pub fn online_client_protocol<R: Read + Send, W: Write + Send>(
-        mut reader: R,
-        mut writer: W,
+    pub fn online_client_protocol<R: Read + Send, W: Write + Send + Send>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         input: &Input<FixedPoint<P>>,
         architecture: &NeuralArchitecture<AdditiveShare<P>, FixedPoint<P>>,
         state: &ClientState<P>,
@@ -521,7 +524,7 @@ where
                                 .flat_map(|l| l.clone())
                                 .collect::<Vec<_>>();
                             let output = ReluProtocol::online_client_protocol(
-                                &mut reader,
+                                reader,
                                 layer_size,              // num_relus
                                 &layer_server_labels,    // Labels for layer
                                 &layer_client_labels,    // Labels for layer
@@ -547,8 +550,8 @@ where
                                 _,
                             >(
                                 CLIENT, // party_index: 1
-                                &mut reader,
-                                &mut writer,
+                                reader,
+                                writer,
                                 &poly,
                                 next_layer_input.as_slice().unwrap(),
                                 triples,
@@ -570,7 +573,7 @@ where
                     next_layer_input = state.linear_post_application_share[&i].clone();
 
                     LinearProtocol::online_client_protocol(
-                        &mut writer,
+                        writer,
                         &input,
                         &layer_info,
                         &mut next_layer_input,
@@ -588,7 +591,7 @@ where
         }
 
         timer_end!(start_time);
-        bincode::deserialize_from(reader).map(|output: MsgRcv<P>| {
+        crate::bytes::deserialize(reader).map(|output: MsgRcv<P>| {
             let server_output_share = output.msg();
             server_output_share.combine(&next_layer_input)
         })

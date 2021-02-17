@@ -32,6 +32,8 @@ bincode = "1.0"
 serde = "1.0"
 crossbeam = "0.7.1"
 
+io-utils = { git = "https://github.com/ryanleh/io-utils", branch = "main" }
+
 [dev-dependencies]
 rand_chacha = { version = "0.1.1" }
 

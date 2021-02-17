@@ -5,6 +5,7 @@ use algebra::{
     FpParameters, PrimeField, UniformRandom,
 };
 use crypto_primitives::additive_share::Share;
+use io_utils::IMuxSync;
 use neural_network::{
     layers::*,
     tensors::{Input, Output},
@@ -45,9 +46,9 @@ where
     <P::Field as PrimeField>::Params: Fp64Parameters,
     P::Field: PrimeField<BigInt = <<P::Field as PrimeField>::Params as FpParameters>::BigInt>,
 {
-    pub fn offline_server_protocol<R: Read, W: Write, RNG: RngCore + CryptoRng>(
-        reader: &mut R,
-        writer: W,
+    pub fn offline_server_protocol<R: Read + Send, W: Write + Send, RNG: RngCore + CryptoRng>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         layer: &LinearLayer<AdditiveShare<P>, FixedPoint<P>>,
         rng: &mut RNG,
         sfhe_op: &mut Option<ServerFHE>,
@@ -116,9 +117,9 @@ where
     // Output randomness to share the input in the online phase, and an additive
     // share of the output of after the linear function has been applied.
     // Basically, r and -(Lr + s).
-    pub fn offline_client_protocol<'a, R: Read, W: Write, RNG: RngCore + CryptoRng>(
-        reader: R,
-        writer: &mut W,
+    pub fn offline_client_protocol<'a, R: Read + Send, W: Write + Send, RNG: RngCore + CryptoRng>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         input_dims: (usize, usize, usize, usize),
         output_dims: (usize, usize, usize, usize),
         layer_info: &LinearLayerInfo<AdditiveShare<P>, FixedPoint<P>>,
@@ -189,8 +190,8 @@ where
         Ok((layer_randomness.into(), client_share_next))
     }
 
-    pub fn online_client_protocol<W: Write>(
-        writer: W,
+    pub fn online_client_protocol<W: Write + Send>(
+        writer: &mut IMuxSync<W>,
         x_s: &Input<AdditiveShare<P>>,
         layer: &LinearLayerInfo<AdditiveShare<P>, FixedPoint<P>>,
         next_layer_input: &mut Output<AdditiveShare<P>>,
@@ -212,8 +213,8 @@ where
         Ok(())
     }
 
-    pub fn online_server_protocol<R: Read>(
-        reader: R,
+    pub fn online_server_protocol<R: Read + Send>(
+        reader: &mut IMuxSync<R>,
         layer: &LinearLayer<AdditiveShare<P>, FixedPoint<P>>,
         output_rerandomizer: &Output<P::Field>,
         input_derandomizer: &Input<P::Field>,
