@@ -460,9 +460,9 @@ where
                 },
             }
         }
-        timer_end!(start_time);
         let sent_message = MsgSend::new(&next_layer_input);
         crate::bytes::serialize(writer, &sent_message)?;
+        timer_end!(start_time);
         Ok(())
     }
 
@@ -589,11 +589,11 @@ where
                 },
             }
         }
-
-        timer_end!(start_time);
-        crate::bytes::deserialize(reader).map(|output: MsgRcv<P>| {
+        let result = crate::bytes::deserialize(reader).map(|output: MsgRcv<P>| {
             let server_output_share = output.msg();
             server_output_share.combine(&next_layer_input)
-        })
+        })?;
+        timer_end!(start_time);
+        Ok(result)
     }
 }
