@@ -10,13 +10,21 @@ const RANDOMNESS: [u8; 32] = [
 ];
 
 fn get_args() -> ArgMatches<'static> {
-    App::new("input-auth-client")
+    App::new("mnist-client")
         .arg(
             Arg::with_name("ip")
                 .short("i")
                 .long("ip")
                 .takes_value(true)
                 .help("Server IP address")
+                .required(true),
+        )
+        .arg(
+            Arg::with_name("layers")
+                .short("l")
+                .long("layers")
+                .takes_value(true)
+                .help("Number of polynomial layers (0-3)")
                 .required(true),
         )
         .arg(
@@ -36,10 +44,11 @@ fn main() {
     let args = get_args();
 
     let ip = args.value_of("ip").unwrap();
+    let layers = args.value_of("layers").unwrap();
     let port = args.value_of("port").unwrap_or("8000");
     let server_addr = format!("{}:{}", ip, port);
 
-    let network = construct_mnist(Some(&vs.root()), 1, 0, &mut rng);
+    let network = construct_mnist(Some(&vs.root()), 1, layers, &mut rng);
     let architecture = (&network).into();
 
     experiments::latency::client::nn_client(&server_addr, architecture, &mut rng);

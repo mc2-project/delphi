@@ -13,7 +13,7 @@ const RANDOMNESS: [u8; 32] = [
 ];
 
 fn get_args() -> ArgMatches<'static> {
-    App::new("input-auth-client")
+    App::new("gc-client")
         .arg(
             Arg::with_name("model")
                 .short("m")

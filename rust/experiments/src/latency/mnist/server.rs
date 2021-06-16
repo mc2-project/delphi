@@ -10,7 +10,15 @@ const RANDOMNESS: [u8; 32] = [
 ];
 
 fn get_args() -> ArgMatches<'static> {
-    App::new("triples-client")
+    App::new("mnist-server")
+        .arg(
+            Arg::with_name("layers")
+                .short("l")
+                .long("layers")
+                .takes_value(true)
+                .help("Number of polynomial layers (0-3)")
+                .required(true),
+        )
         .arg(
             Arg::with_name("port")
                 .short("p")
@@ -27,10 +35,11 @@ fn main() {
     let mut rng = ChaChaRng::from_seed(RANDOMNESS);
     let args = get_args();
 
+    let layers = args.value_of("layers").unwrap();
     let port = args.value_of("port").unwrap_or("8000");
     let server_addr = format!("0.0.0.0:{}", port);
     
-    let network = construct_mnist(Some(&vs.root()), 1, 0, &mut rng);
+    let network = construct_mnist(Some(&vs.root()), 1, layers, &mut rng);
 
     experiments::latency::server::nn_server(&server_addr, network, &mut rng);
 }
