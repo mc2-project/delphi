@@ -4,6 +4,7 @@ use algebra::{
     fixed_point::{FixedPoint, FixedPointParameters},
 };
 use crypto_primitives::{additive_share::Share, beavers_mul::FPBeaversMul};
+use io_utils::IMuxSync;
 use protocols_sys::{key_share::KeyShare, ClientFHE, ServerFHE};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
@@ -101,8 +102,8 @@ mod beavers_mul {
                     match stream {
                         Ok(read_stream) => {
                             return BeaversMulProtocol::offline_server_protocol::<TenBitBM, _, _, _>(
-                                &read_stream,
-                                &(read_stream.try_clone().unwrap()),
+                                &mut IMuxSync::new(vec![read_stream.try_clone().unwrap()]),
+                                &mut IMuxSync::new(vec![read_stream]),
                                 &sfhe,
                                 num_triples,
                                 &mut rng,
@@ -117,8 +118,8 @@ mod beavers_mul {
                 let mut rng = ChaChaRng::from_seed(RANDOMNESS);
                 let party_2_stream = TcpStream::connect(&addr).unwrap();
                 BeaversMulProtocol::offline_client_protocol::<TenBitBM, _, _, _>(
-                    &party_2_stream,
-                    &(party_2_stream.try_clone().unwrap()),
+                    &mut IMuxSync::new(vec![party_2_stream.try_clone().unwrap()]),
+                    &mut IMuxSync::new(vec![party_2_stream]),
                     &cfhe,
                     num_triples,
                     &mut rng,
@@ -137,8 +138,8 @@ mod beavers_mul {
                         Ok(read_stream) => {
                             return BeaversMulProtocol::online_client_protocol::<TenBitBM, _, _>(
                                 1, // party index
-                                &read_stream,
-                                &(read_stream.try_clone().unwrap()),
+                                &mut IMuxSync::new(vec![read_stream.try_clone().unwrap()]),
+                                &mut IMuxSync::new(vec![read_stream]),
                                 &x_s_1,
                                 &y_s_1,
                                 &triples_1,
@@ -153,8 +154,8 @@ mod beavers_mul {
                 let party_2_stream = TcpStream::connect(&addr).unwrap();
                 BeaversMulProtocol::online_server_protocol::<TenBitBM, _, _>(
                     2, // party index
-                    &party_2_stream,
-                    &(party_2_stream.try_clone().unwrap()),
+                    &mut IMuxSync::new(vec![party_2_stream.try_clone().unwrap()]),
+                    &mut IMuxSync::new(vec![party_2_stream]),
                     &x_s_2,
                     &y_s_2,
                     &triples_2,
@@ -222,11 +223,12 @@ mod gc {
                 let mut rng = ChaChaRng::from_seed(RANDOMNESS);
 
                 for stream in server_listener.incoming() {
-                    let read_stream = stream.expect("server connection failed!");
-                    let write_stream = read_stream.try_clone().unwrap();
+                    let stream = stream.expect("server connection failed!");
+                    let mut read_stream = IMuxSync::new(vec![stream.try_clone().unwrap()]);
+                    let mut write_stream = IMuxSync::new(vec![stream]);
                     return ReluProtocol::<TenBitExpParams>::offline_server_protocol(
-                        read_stream,
-                        &write_stream,
+                        &mut read_stream,
+                        &mut write_stream,
                         num_relus,
                         &mut rng,
                     );
@@ -238,12 +240,13 @@ mod gc {
                 let mut rng = ChaChaRng::from_seed(RANDOMNESS);
 
                 // client's connection to server.
-                let write_stream = TcpStream::connect(server_addr).unwrap();
-                let read_stream = write_stream.try_clone().unwrap();
+                let stream = TcpStream::connect(server_addr).expect("connecting to server failed");
+                let mut read_stream = IMuxSync::new(vec![stream.try_clone().unwrap()]);
+                let mut write_stream = IMuxSync::new(vec![stream]);
 
                 return ReluProtocol::offline_client_protocol(
-                    read_stream,
-                    write_stream,
+                    &mut read_stream,
+                    &mut write_stream,
                     num_relus,
                     &client_x_s,
                     &mut rng,
@@ -264,9 +267,10 @@ mod gc {
                 let server_labels = &client_offline.server_randomizer_labels;
                 let client_labels = &client_offline.client_input_labels;
                 for stream in client_listener.incoming() {
-                    let read_stream = stream.expect("client connection failed!");
+                    let mut read_stream =
+                        IMuxSync::new(vec![stream.expect("client connection failed!")]);
                     return ReluProtocol::online_client_protocol(
-                        read_stream,
+                        &mut read_stream,
                         num_relus,
                         &server_labels,
                         &client_labels,
@@ -280,10 +284,11 @@ mod gc {
             // Start thread for the server to make a connection.
             let _ = s
                 .spawn(|_| {
-                    let write_stream = TcpStream::connect(client_addr).unwrap();
+                    let mut write_stream =
+                        IMuxSync::new(vec![TcpStream::connect(client_addr).unwrap()]);
 
                     ReluProtocol::online_server_protocol(
-                        &write_stream,
+                        &mut write_stream,
                         &server_x_s,
                         &server_offline.encoders,
                     )
@@ -387,8 +392,8 @@ mod linear {
                         let stream = stream.expect("server connection failed!");
                         // let mut write_stream = read_stream.try_clone().unwrap();
                         return LinearProtocol::offline_server_protocol(
-                            &mut BufReader::new(&stream),
-                            &mut BufWriter::new(&stream),
+                            &mut IMuxSync::new(vec![BufReader::new(&stream)]),
+                            &mut IMuxSync::new(vec![BufWriter::new(&stream)]),
                             &layer.lock().unwrap(), // layer parameters
                             &mut rng,
                             &mut sfhe_op,
@@ -403,9 +408,10 @@ mod linear {
 
                     // client's connection to server.
                     // TODO: Figure out why BufStream doesn't work here
-                    let mut write_stream =
+                    let stream =
                         TcpStream::connect(server_addr).expect("connecting to server failed");
-                    let mut read_stream = write_stream.try_clone().unwrap();
+                    let mut read_stream = IMuxSync::new(vec![stream.try_clone().unwrap()]);
+                    let mut write_stream = IMuxSync::new(vec![stream]);
 
                     match &layer_info {
                         LayerInfo::LL(_, info) => LinearProtocol::offline_client_protocol(
@@ -435,11 +441,12 @@ mod linear {
         let server_next_layer_share = crossbeam::thread::scope(|s| {
             // Start thread for client.
             let result = s.spawn(|_| {
-                let write_stream = TcpStream::connect(server_addr).unwrap();
+                let mut write_stream =
+                    IMuxSync::new(vec![TcpStream::connect(server_addr).unwrap()]);
                 let mut result = Output::zeros(layer_output_dims);
                 match &layer_info {
                     LayerInfo::LL(_, info) => LinearProtocol::online_client_protocol(
-                        &write_stream,
+                        &mut write_stream,
                         &server_current_layer_share,
                         &info,
                         &mut result,
@@ -452,10 +459,11 @@ mod linear {
             let server_result = s
                 .spawn(move |_| {
                     for stream in server_listener.incoming() {
-                        let read_stream = stream.expect("server connection failed!");
+                        let mut read_stream =
+                            IMuxSync::new(vec![stream.expect("server connection failed!")]);
                         let mut output = Output::zeros(output_dims);
                         return LinearProtocol::online_server_protocol(
-                            read_stream,            // we only receive here, no messages to client
+                            &mut read_stream,       // we only receive here, no messages to client
                             &layer.lock().unwrap(), // layer parameters
                             &server_offline,        // this is our `s` from above.
                             &Input::zeros(layer_input_dims),
@@ -604,8 +612,8 @@ mod linear {
                         let stream = stream.expect("server connection failed!");
                         // let mut write_stream = read_stream.try_clone().unwrap();
                         return LinearProtocol::offline_server_protocol(
-                            &mut BufReader::new(&stream),
-                            &mut BufWriter::new(&stream),
+                            &mut IMuxSync::new(vec![BufReader::new(&stream)]),
+                            &mut IMuxSync::new(vec![BufWriter::new(&stream)]),
                             &layer.lock().unwrap(), // layer parameters
                             &mut rng,
                             &mut sfhe_op,
@@ -620,9 +628,10 @@ mod linear {
 
                     // client's connection to server.
                     // TODO: Figure out why BufStream doesn't work here
-                    let mut write_stream =
+                    let stream =
                         TcpStream::connect(server_addr).expect("connecting to server failed");
-                    let mut read_stream = write_stream.try_clone().unwrap();
+                    let mut read_stream = IMuxSync::new(vec![stream.try_clone().unwrap()]);
+                    let mut write_stream = IMuxSync::new(vec![stream]);
 
                     match &layer_info {
                         LayerInfo::LL(_, info) => LinearProtocol::offline_client_protocol(
@@ -678,11 +687,12 @@ mod linear {
         let server_next_layer_share = crossbeam::thread::scope(|s| {
             // Start thread for client.
             let result = s.spawn(|_| {
-                let write_stream = TcpStream::connect(server_addr).unwrap();
+                let mut write_stream =
+                    IMuxSync::new(vec![TcpStream::connect(server_addr).unwrap()]);
                 let mut result = Output::zeros(layer_output_dims);
                 match &layer_info {
                     LayerInfo::LL(_, info) => LinearProtocol::online_client_protocol(
-                        &write_stream,
+                        &mut write_stream,
                         &server_current_layer_share,
                         &info,
                         &mut result,
@@ -695,10 +705,11 @@ mod linear {
             let server_result = s
                 .spawn(move |_| {
                     for stream in server_listener.incoming() {
-                        let read_stream = stream.expect("server connection failed!");
+                        let mut read_stream =
+                            IMuxSync::new(vec![stream.expect("server connection failed!")]);
                         let mut output = Output::zeros(output_dims);
                         return LinearProtocol::online_server_protocol(
-                            read_stream,            // we only receive here, no messages to client
+                            &mut read_stream,       // we only receive here, no messages to client
                             &layer.lock().unwrap(), // layer parameters
                             &server_offline,        // this is our `s` from above.
                             &Input::zeros(layer_input_dims),
