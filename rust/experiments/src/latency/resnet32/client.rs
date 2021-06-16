@@ -44,7 +44,7 @@ fn main() {
     let args = get_args();
     
     let ip = args.value_of("ip").unwrap();
-    let layers = args.value_of("layers").unwrap();
+    let layers = clap::value_t!(args.value_of("layers"), usize).unwrap();
     let port = args.value_of("port").unwrap_or("8000");
     let server_addr = format!("{}:{}", ip, port);
 
