@@ -40,8 +40,7 @@ pub mod inner {
     #[macro_export]
     macro_rules! timer_end {
         ($time:expr) => {{
-            use std::io::Write;
-            use std::sync::atomic::Ordering;
+            use std::{io::Write, sync::atomic::Ordering};
             use $crate::{compute_indent, Colorize, NUM_INDENT};
 
             let time = $time.1;
@@ -143,7 +142,7 @@ pub mod inner {
                 } else {
                     PAD_CHAR
                 }
-            }
+            },
             Err(_) => PAD_CHAR,
         };
         for _ in 0..indent_amount {

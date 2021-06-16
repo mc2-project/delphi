@@ -6,8 +6,8 @@ use algebra::{
     FpParameters, Polynomial,
 };
 use crypto_primitives::{BeaversMul, Triple};
-use protocols_sys::*;
 use io_utils::IMuxSync;
+use protocols_sys::*;
 use rand::{CryptoRng, RngCore};
 use std::{
     io::{Read, Write},

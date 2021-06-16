@@ -1,7 +1,10 @@
 use io_utils::IMuxSync;
 
 #[inline]
-pub fn serialize<W: std::io::Write + Send, T: ?Sized>(writer: &mut IMuxSync<W>, value: &T) -> Result<(), bincode::Error>
+pub fn serialize<W: std::io::Write + Send, T: ?Sized>(
+    writer: &mut IMuxSync<W>,
+    value: &T,
+) -> Result<(), bincode::Error>
 where
     T: serde::Serialize,
 {

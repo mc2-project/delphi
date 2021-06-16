@@ -2,10 +2,8 @@ use ::neural_network as nn;
 extern crate num_cpus;
 extern crate rayon;
 use algebra::{fields::near_mersenne_64::F, FixedPoint, FixedPointParameters, Polynomial};
-use nn::tensors::*;
-use protocols::AdditiveShare;
-use rand::{CryptoRng, Rng, RngCore};
-
+use bench_utils::*;
+use io_utils::{CountingIO, IMuxSync};
 use nn::{
     layers::{
         average_pooling::AvgPoolParams,
@@ -13,17 +11,24 @@ use nn::{
         fully_connected::FullyConnectedParams,
         Layer, LayerDims, LinearLayer, NonLinearLayer,
     },
-    NeuralNetwork,
+    tensors::*,
+    NeuralArchitecture, NeuralNetwork,
+};
+use protocols::{neural_network::NNProtocol, AdditiveShare};
+use rand::{CryptoRng, Rng, RngCore};
+use std::{
+    io::{BufReader, BufWriter},
+    net::{TcpListener, TcpStream},
 };
 
+pub mod inference;
 pub mod latency;
-//pub mod inference;
-//pub mod linear_only;
+pub mod linear_only;
 pub mod minionn;
 pub mod mnist;
-//pub mod resnet32;
-//pub mod throughput;
-//pub mod validation;
+pub mod resnet32;
+pub mod throughput;
+pub mod validation;
 
 pub struct TenBitExpParams {}
 
@@ -35,6 +40,116 @@ impl FixedPointParameters for TenBitExpParams {
 
 type TenBitExpFP = FixedPoint<TenBitExpParams>;
 type TenBitAS = AdditiveShare<TenBitExpParams>;
+
+pub fn client_connect(
+    addr: &str,
+) -> (
+    IMuxSync<CountingIO<BufReader<TcpStream>>>,
+    IMuxSync<CountingIO<BufWriter<TcpStream>>>,
+) {
+    // TODO: Maybe change to rayon_num_threads
+    let mut readers = Vec::with_capacity(16);
+    let mut writers = Vec::with_capacity(16);
+    for _ in 0..16 {
+        let stream = TcpStream::connect(addr).unwrap();
+        readers.push(CountingIO::new(BufReader::new(stream.try_clone().unwrap())));
+        writers.push(CountingIO::new(BufWriter::new(stream)));
+    }
+    (IMuxSync::new(readers), IMuxSync::new(writers))
+}
+
+pub fn server_connect(
+    addr: &str,
+) -> (
+    IMuxSync<CountingIO<BufReader<TcpStream>>>,
+    IMuxSync<CountingIO<BufWriter<TcpStream>>>,
+) {
+    let listener = TcpListener::bind(addr).unwrap();
+    let mut incoming = listener.incoming();
+    let mut readers = Vec::with_capacity(16);
+    let mut writers = Vec::with_capacity(16);
+    for _ in 0..16 {
+        let stream = incoming.next().unwrap().unwrap();
+        readers.push(CountingIO::new(BufReader::new(stream.try_clone().unwrap())));
+        writers.push(CountingIO::new(BufWriter::new(stream)));
+    }
+    (IMuxSync::new(readers), IMuxSync::new(writers))
+}
+
+pub fn nn_client<R: RngCore + CryptoRng>(
+    server_addr: &str,
+    architecture: &NeuralArchitecture<TenBitAS, TenBitExpFP>,
+    input: Input<TenBitExpFP>,
+    rng: &mut R,
+) -> Input<TenBitExpFP> {
+    let (client_state, offline_read, offline_write) = {
+        let (mut reader, mut writer) = client_connect(server_addr);
+        (
+            NNProtocol::offline_client_protocol(&mut reader, &mut writer, &architecture, rng)
+                .unwrap(),
+            reader.count(),
+            writer.count(),
+        )
+    };
+
+    let (client_output, online_read, online_write) = {
+        let (mut reader, mut writer) = client_connect(server_addr);
+        (
+            NNProtocol::online_client_protocol(
+                &mut reader,
+                &mut writer,
+                &input,
+                &architecture,
+                &client_state,
+            )
+            .unwrap(),
+            reader.count(),
+            writer.count(),
+        )
+    };
+    add_to_trace!(|| "Offline Communication", || format!(
+        "Read {} bytes\nWrote {} bytes",
+        offline_read, offline_write
+    ));
+    add_to_trace!(|| "Online Communication", || format!(
+        "Read {} bytes\nWrote {} bytes",
+        online_read, online_write
+    ));
+    client_output
+}
+
+pub fn nn_server<R: RngCore + CryptoRng>(
+    server_addr: &str,
+    nn: &NeuralNetwork<TenBitAS, TenBitExpFP>,
+    rng: &mut R,
+) {
+    let (server_state, offline_read, offline_write) = {
+        let (mut reader, mut writer) = server_connect(server_addr);
+        (
+            NNProtocol::offline_server_protocol(&mut reader, &mut writer, &nn, rng).unwrap(),
+            reader.count(),
+            writer.count(),
+        )
+    };
+
+    let (_, online_read, online_write) = {
+        let (mut reader, mut writer) = server_connect(server_addr);
+        (
+            NNProtocol::online_server_protocol(&mut reader, &mut writer, &nn, &server_state)
+                .unwrap(),
+            reader.count(),
+            writer.count(),
+        )
+    };
+    add_to_trace!(|| "Offline Communication", || format!(
+        "Read {} bytes\nWrote {} bytes",
+        offline_read, offline_write
+    ));
+    add_to_trace!(|| "Online Communication", || format!(
+        "Read {} bytes\nWrote {} bytes",
+        online_read, online_write
+    ));
+}
 
 pub fn generate_random_number<R: Rng>(rng: &mut R) -> (f64, TenBitExpFP) {
     let is_neg: bool = rng.gen();

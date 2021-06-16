@@ -7,7 +7,8 @@
 #![deny(unused_comparisons, bare_trait_objects, unused_must_use, const_err)]
 #![forbid(unsafe_code)]
 
-/// Defines `struct`s and `trait`s for constructing additively-shared ring elements.
+/// Defines `struct`s and `trait`s for constructing additively-shared ring
+/// elements.
 pub mod additive_share;
 /// Defines `struct`s and `trait`s for multiplying additive shares.
 pub mod beavers_mul;

@@ -1,6 +1,5 @@
 use cmake::Config;
-use std::env;
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 fn main() {
     let project_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -10,12 +9,16 @@ fn main() {
     let seal_install_prefix = Config::new("c++/SEAL/native/src")
         .define("SEAL_THROW_ON_TRANSPARENT_CIPHERTEXT", "0")
         .build();
-    let delphi_install_prefix = Config::new("c++")
-        .define("UNITTESTS", "0")
-        .build();
+    let delphi_install_prefix = Config::new("c++").define("UNITTESTS", "0").build();
 
-    println!("cargo:rustc-link-search={}", seal_install_prefix.join("lib").display());
-    println!("cargo:rustc-link-search={}", delphi_install_prefix.display());
+    println!(
+        "cargo:rustc-link-search={}",
+        seal_install_prefix.join("lib").display()
+    );
+    println!(
+        "cargo:rustc-link-search={}",
+        delphi_install_prefix.display()
+    );
     println!("cargo:rustc-link-lib=static=DelphiOffline");
     println!("cargo:rustc-link-lib=static=seal");
     println!("cargo:rustc-link-lib=dylib=stdc++");

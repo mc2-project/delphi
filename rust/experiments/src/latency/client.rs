@@ -1,70 +1,31 @@
 use crate::*;
-use bench_utils::*;
-use algebra::{
-    fields::PrimeField,
-    fixed_point::{FixedPoint, FixedPointParameters},
-    fp_64::Fp64Parameters,
-    BigInteger64, FpParameters, UniformRandom,
+use algebra::{fields::PrimeField, FpParameters};
+use crypto_primitives::gc::{fancy_garbling, fancy_garbling::Wire};
+use io_utils::{CountingIO, IMuxSync};
+use neural_network::{
+    layers::{LayerInfo, LinearLayerInfo, NonLinearLayerInfo},
+    NeuralArchitecture,
 };
 use num_traits::identities::Zero;
-use crypto_primitives::{
-    beavers_mul::{FPBeaversMul, Triple},
-    gc::{
-        fancy_garbling,
-        fancy_garbling::{
-            circuit::{Circuit, CircuitBuilder},
-            Encoder, GarbledCircuit, Wire,
-        },
-    },
-    Share,
-};
-use neural_network::{
-    layers::{Layer, LayerInfo, LinearLayerInfo, NonLinearLayer, NonLinearLayerInfo},
-    NeuralArchitecture, NeuralNetwork,
-    tensors::*,
-};
+use ocelot::ot::{AlszReceiver as OTReceiver, Receiver};
 use protocols::{
-    gc::{ReluProtocol, ClientGcMsgRcv},
+    gc::ClientGcMsgRcv,
     linear_layer::{LinearProtocol, OfflineClientKeySend},
-    neural_network::NNProtocol,
 };
-use io_utils::{CountingIO, IMuxSync};
-use std::{
-    convert::TryFrom,
-    collections::BTreeMap,
-    io::{BufReader, BufWriter, Write},
-    net::TcpStream,
-    sync::{Arc, Mutex},
-};
-use ocelot::ot::{AlszReceiver as OTReceiver, AlszSender as OTSender, Receiver, Sender};
-use protocols_sys::{ClientFHE, ServerFHE, key_share::KeyShare, client_keygen};
-use rayon::prelude::*;
+use protocols_sys::{key_share::KeyShare, ClientFHE};
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 use scuttlebutt::Channel;
+use std::{
+    collections::BTreeMap,
+    io::{BufReader, BufWriter},
+    net::TcpStream,
+};
 
 const RANDOMNESS: [u8; 32] = [
-    0x11, 0xe0, 0x8f, 0xbc, 0x89, 0xa7, 0x34, 0x01, 0x45, 0x86, 0x82, 0xb6, 0x51, 0xda, 0xf4,
-    0x76, 0x5d, 0xc9, 0x8d, 0xea, 0x23, 0xf2, 0x90, 0x8f, 0x9d, 0x03, 0xf2, 0x77, 0xd3, 0x4a,
-    0x52, 0xd2,
+    0x11, 0xe0, 0x8f, 0xbc, 0x89, 0xa7, 0x34, 0x01, 0x45, 0x86, 0x82, 0xb6, 0x51, 0xda, 0xf4, 0x76,
+    0x5d, 0xc9, 0x8d, 0xea, 0x23, 0xf2, 0x90, 0x8f, 0x9d, 0x03, 0xf2, 0x77, 0xd3, 0x4a, 0x52, 0xd2,
 ];
-
-pub fn client_connect(
-    addr: &str,
-) -> (
-    IMuxSync<CountingIO<BufReader<TcpStream>>>,
-    IMuxSync<CountingIO<BufWriter<TcpStream>>>,
-) {
-    // TODO: Maybe change to rayon_num_threads
-    let mut readers = Vec::with_capacity(16);
-    let mut writers = Vec::with_capacity(16);
-    for _ in 0..16 {
-        let stream = TcpStream::connect(addr).unwrap();
-        readers.push(CountingIO::new(BufReader::new(stream.try_clone().unwrap())));
-        writers.push(CountingIO::new(BufWriter::new(stream)));
-    }
-    (IMuxSync::new(readers), IMuxSync::new(writers))
-}
 
 pub fn nn_client<R: RngCore + CryptoRng>(
     server_addr: &str,
@@ -78,34 +39,8 @@ pub fn nn_client<R: RngCore + CryptoRng>(
         .iter_mut()
         .for_each(|in_i| *in_i = generate_random_number(rng).1);
 
-    let (client_state, offline_read, offline_write) = {
-        let (mut reader, mut writer) = client_connect(server_addr);
-        (
-            NNProtocol::offline_client_protocol(&mut reader, &mut writer, &architecture, rng).unwrap(),
-            reader.count(),
-            writer.count(),
-        )
-    };
-
-    let (_client_output, online_read, online_write) = {
-        let (mut reader, mut writer) = client_connect(server_addr);
-        (
-            NNProtocol::online_client_protocol(
-                &mut reader,
-                &mut writer,
-                &input,
-                &architecture,
-                &client_state,
-            )
-            .unwrap(),
-            reader.count(),
-            writer.count(),
-        )
-    };
-    add_to_trace!(|| "Offline Communication", || format!("Read {} bytes\nWrote {} bytes", offline_read, offline_write));
-    add_to_trace!(|| "Online Communication", || format!("Read {} bytes\nWrote {} bytes", online_read, online_write));
+    crate::nn_client(server_addr, &architecture, input, rng);
 }
-
 
 fn cg_helper<R: RngCore + CryptoRng>(
     layers: &[usize],
@@ -119,8 +54,8 @@ fn cg_helper<R: RngCore + CryptoRng>(
     let mut out_shares = BTreeMap::new();
     for i in layers.iter() {
         match &architecture.layers[*i] {
-            LayerInfo::NLL(dims, NonLinearLayerInfo::ReLU) => panic!(),
-            LayerInfo::NLL(dims, NonLinearLayerInfo::PolyApprox { .. }) => panic!(),
+            LayerInfo::NLL(_dims, NonLinearLayerInfo::ReLU) => panic!(),
+            LayerInfo::NLL(_dims, NonLinearLayerInfo::PolyApprox { .. }) => panic!(),
             LayerInfo::LL(dims, linear_layer_info) => {
                 let (in_share, mut out_share) = match &linear_layer_info {
                     LinearLayerInfo::Conv2d { .. } | LinearLayerInfo::FullyConnected => {
@@ -132,7 +67,8 @@ fn cg_helper<R: RngCore + CryptoRng>(
                             &linear_layer_info,
                             rng,
                             &mut cfhe,
-                        ).unwrap()
+                        )
+                        .unwrap()
                     },
                     _ => {
                         // AvgPool and Identity don't require an offline communication
@@ -141,8 +77,7 @@ fn cg_helper<R: RngCore + CryptoRng>(
                             // the last layer's output share
                             let prev_output_share = out_shares.get(&(i - 1)).unwrap();
                             let mut output_share = Output::zeros(dims.output_dimensions());
-                            linear_layer_info
-                                .evaluate_naive(prev_output_share, &mut output_share);
+                            linear_layer_info.evaluate_naive(prev_output_share, &mut output_share);
                             (Input::zeros(dims.input_dimensions()), output_share)
                         } else {
                             // Otherwise, just return randomizers of 0
@@ -169,12 +104,7 @@ fn cg_helper<R: RngCore + CryptoRng>(
     }
 }
 
-
-pub fn cg<R: RngCore + CryptoRng>(
-    server_addr: &str,
-    architecture: NeuralArchitecture<TenBitAS, TenBitExpFP>,
-    rng: &mut R,
-) {
+pub fn cg(server_addr: &str, architecture: NeuralArchitecture<TenBitAS, TenBitExpFP>) {
     let (mut r1, mut w1) = client_connect(server_addr);
     // Give server time to start async listener
     std::thread::sleep_ms(1000);
@@ -183,7 +113,7 @@ pub fn cg<R: RngCore + CryptoRng>(
     let key_time = timer_start!(|| "Keygen");
     let mut key_share = KeyShare::new();
     let (cfhe, keys_vec) = key_share.generate();
-    let mut cfhe = Some(cfhe);
+    let cfhe = Some(cfhe);
 
     let sent_message = OfflineClientKeySend::new(&keys_vec);
     protocols::bytes::serialize(&mut w1, &sent_message).unwrap();
@@ -192,7 +122,7 @@ pub fn cg<R: RngCore + CryptoRng>(
     let key_time = timer_start!(|| "Keygen");
     let mut key_share = KeyShare::new();
     let (cfhe_2, keys_vec) = key_share.generate();
-    let mut cfhe_2 = Some(cfhe_2);
+    let cfhe_2 = Some(cfhe_2);
 
     let sent_message = OfflineClientKeySend::new(&keys_vec);
     protocols::bytes::serialize(&mut w1, &sent_message).unwrap();
@@ -205,7 +135,7 @@ pub fn cg<R: RngCore + CryptoRng>(
         17 => (vec![0, 4, 5, 12, 14], vec![2, 7, 9, 10, 16]),
         _ => panic!(),
     };
-    
+
     let linear_time = timer_start!(|| "Linear layers offline phase");
     crossbeam::scope(|s| {
         let r1 = &mut r1;
@@ -218,14 +148,19 @@ pub fn cg<R: RngCore + CryptoRng>(
             let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
             cg_helper(&t1_layers, architecture_1, cfhe, r1, w1, &mut rng);
         });
-        
+
         s.spawn(move |_| {
             let mut rng = &mut ChaChaRng::from_seed(RANDOMNESS);
             cg_helper(&t2_layers, architecture_2, cfhe_2, r2, w2, &mut rng);
         });
-    });
+    })
+    .unwrap();
     timer_end!(linear_time);
-    add_to_trace!(|| "Communication", || format!("Read {} bytes\nWrote {} bytes", r1.count() + r2.count(), w1.count() + w2.count()));
+    add_to_trace!(|| "Communication", || format!(
+        "Read {} bytes\nWrote {} bytes",
+        r1.count() + r2.count(),
+        w1.count() + w2.count()
+    ));
 }
 
 pub fn gc<R: RngCore + CryptoRng>(server_addr: &str, number_of_relus: usize, rng: &mut R) {
@@ -234,8 +169,7 @@ pub fn gc<R: RngCore + CryptoRng>(server_addr: &str, number_of_relus: usize, rng
     // Keygen
     let key_time = timer_start!(|| "Keygen");
     let mut key_share = KeyShare::new();
-    let (cfhe, keys_vec) = key_share.generate();
-    let mut cfhe = Some(cfhe);
+    let (_, keys_vec) = key_share.generate();
 
     let sent_message = OfflineClientKeySend::new(&keys_vec);
     protocols::bytes::serialize(&mut writer, &sent_message).unwrap();
@@ -267,7 +201,11 @@ pub fn gc<R: RngCore + CryptoRng>(server_addr: &str, number_of_relus: usize, rng
     }
     timer_end!(rcv_gc_time);
 
-    add_to_trace!(|| "GC Communication", || format!("Read {} bytes\nWrote {} bytes", reader.count(), writer.count()));
+    add_to_trace!(|| "GC Communication", || format!(
+        "Read {} bytes\nWrote {} bytes",
+        reader.count(),
+        writer.count()
+    ));
     reader.reset();
     writer.reset();
 
@@ -278,7 +216,7 @@ pub fn gc<R: RngCore + CryptoRng>(server_addr: &str, number_of_relus: usize, rng
         .map(|b| b == 1)
         .collect::<Vec<_>>();
 
-    let labels = if number_of_relus != 0 {
+    let _ = if number_of_relus != 0 {
         let r = reader.get_mut_ref().remove(0);
         let w = writer.get_mut_ref().remove(0);
 
@@ -299,5 +237,9 @@ pub fn gc<R: RngCore + CryptoRng>(server_addr: &str, number_of_relus: usize, rng
     };
     timer_end!(start_time);
 
-    add_to_trace!(|| "OT Communication", || format!("Read {} bytes\nWrote {} bytes", reader.count(), writer.count()));
+    add_to_trace!(|| "OT Communication", || format!(
+        "Read {} bytes\nWrote {} bytes",
+        reader.count(),
+        writer.count()
+    ));
 }

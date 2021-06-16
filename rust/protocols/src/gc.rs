@@ -26,7 +26,6 @@ use std::{
     marker::PhantomData,
 };
 
-
 #[derive(Default)]
 pub struct ReluProtocol<P: FixedPointParameters> {
     _share: PhantomData<P>,

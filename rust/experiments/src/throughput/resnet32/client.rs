@@ -1,3 +1,4 @@
+use clap::{App, Arg, ArgMatches};
 use experiments::resnet32::construct_resnet_32;
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;

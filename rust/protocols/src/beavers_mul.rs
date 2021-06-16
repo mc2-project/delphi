@@ -7,18 +7,17 @@ use algebra::{
     FpParameters, UniformRandom,
 };
 use crypto_primitives::{BeaversMul, BlindedSharedInputs};
+use io_utils::IMuxSync;
 use protocols_sys::{
     client_triples::SEALClientTriples, server_triples::SEALServerTriples, ClientFHE, ServerFHE,
 };
-use io_utils::IMuxSync;
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
-    marker::PhantomData,
     io::{Read, Write},
+    marker::PhantomData,
     os::raw::c_char,
 };
-
 
 pub struct BeaversMulProtocol<P: FixedPointParameters> {
     index:  usize,
