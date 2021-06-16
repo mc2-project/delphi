@@ -1,5 +1,4 @@
 use clap::{App, Arg, ArgMatches};
-use experiments::mnist::construct_mnist;
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 
@@ -9,21 +8,21 @@ const RANDOMNESS: [u8; 32] = [
 ];
 
 fn get_args() -> ArgMatches<'static> {
-    App::new("mnist-client")
+    App::new("gc-client")
+        .arg(
+            Arg::with_name("model")
+                .short("m")
+                .long("model")
+                .takes_value(true)
+                .help("MNIST (0), MiniONN(1)")
+                .required(true),
+        )
         .arg(
             Arg::with_name("ip")
                 .short("i")
                 .long("ip")
                 .takes_value(true)
                 .help("Server IP address")
-                .required(true),
-        )
-        .arg(
-            Arg::with_name("layers")
-                .short("l")
-                .long("layers")
-                .takes_value(true)
-                .help("Number of polynomial layers (0-3)")
                 .required(true),
         )
         .arg(
@@ -38,17 +37,18 @@ fn get_args() -> ArgMatches<'static> {
 }
 
 fn main() {
-    let vs = tch::nn::VarStore::new(tch::Device::cuda_if_available());
     let mut rng = ChaChaRng::from_seed(RANDOMNESS);
     let args = get_args();
 
     let ip = args.value_of("ip").unwrap();
-    let layers = clap::value_t!(args.value_of("layers"), usize).unwrap();
     let port = args.value_of("port").unwrap_or("8000");
     let server_addr = format!("{}:{}", ip, port);
 
-    let network = construct_mnist(Some(&vs.root()), 1, layers, &mut rng);
-    let architecture = (&network).into();
+    let model = clap::value_t!(args.value_of("model"), usize).unwrap();
+    assert!(model == 0 || model == 1);
+    let mnist = [9216, 1024, 100].iter().sum();
+    let minionn = [65536, 65536, 16384, 16384, 4096, 4096, 1024].iter().sum();
+    let activations: usize = if model == 0 { mnist } else { minionn };
 
-    experiments::latency::client::nn_client(&server_addr, architecture, &mut rng);
+    experiments::latency::client::gc(&server_addr, activations, &mut rng);
 }

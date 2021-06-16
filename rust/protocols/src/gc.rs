@@ -15,6 +15,7 @@ use crypto_primitives::{
     },
     Share,
 };
+use io_utils::IMuxSync;
 use ocelot::ot::{AlszReceiver as OTReceiver, AlszSender as OTSender, Receiver, Sender};
 use rand::{CryptoRng, RngCore};
 use rayon::prelude::*;
@@ -39,7 +40,7 @@ pub type ClientGcMsgRcv = InMessage<(Vec<GarbledCircuit>, Vec<Wire>), ReluProtoc
 pub type ServerLabelMsgSend<'a> = OutMessage<'a, [Vec<Wire>], ReluProtocolType>;
 pub type ClientLabelMsgRcv = InMessage<Vec<Vec<Wire>>, ReluProtocolType>;
 
-fn make_relu<P: FixedPointParameters>() -> Circuit
+pub fn make_relu<P: FixedPointParameters>() -> Circuit
 where
     <P::Field as PrimeField>::Params: Fp64Parameters,
     P::Field: PrimeField<BigInt = <<P::Field as PrimeField>::Params as FpParameters>::BigInt>,
@@ -49,7 +50,7 @@ where
     b.finish()
 }
 
-fn u128_from_share<P: FixedPointParameters>(s: AdditiveShare<P>) -> u128
+pub fn u128_from_share<P: FixedPointParameters>(s: AdditiveShare<P>) -> u128
 where
     <P::Field as PrimeField>::Params: Fp64Parameters,
     P::Field: PrimeField<BigInt = BigInteger64>,
@@ -79,9 +80,9 @@ where
         make_relu::<P>().num_evaluator_inputs()
     }
 
-    pub fn offline_server_protocol<R: Read, W: Write, RNG: CryptoRng + RngCore>(
-        mut reader: R,
-        mut writer: W,
+    pub fn offline_server_protocol<R: Read + Send, W: Write + Send, RNG: CryptoRng + RngCore>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         number_of_relus: usize,
         rng: &mut RNG,
     ) -> Result<ServerState<P>, bincode::Error> {
@@ -149,14 +150,16 @@ where
             .zip(randomizer_labels.chunks(randomizer_label_per_relu * 8192))
         {
             let sent_message = ServerGcMsgSend::new(&msg_contents);
-            crate::bytes::serialize(&mut writer, &sent_message)?;
-            writer.flush()?;
+            crate::bytes::serialize(writer, &sent_message)?;
         }
         timer_end!(send_gc_time);
 
         if number_of_relus != 0 {
+            let r = reader.get_mut_ref().remove(0);
+            let w = writer.get_mut_ref().remove(0);
+
             let ot_time = timer_start!(|| "OTs");
-            let mut channel = Channel::new(&mut reader, &mut writer);
+            let mut channel = Channel::new(r, w);
             let mut ot = OTSender::init(&mut channel, rng).unwrap();
             ot.send(&mut channel, labels.as_slice(), rng).unwrap();
             timer_end!(ot_time);
@@ -169,9 +172,9 @@ where
         })
     }
 
-    pub fn offline_client_protocol<R: Read, W: Write, RNG: RngCore + CryptoRng>(
-        mut reader: R,
-        mut writer: W,
+    pub fn offline_client_protocol<R: Read + Send, W: Write + Send, RNG: RngCore + CryptoRng>(
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         number_of_relus: usize,
         shares: &[AdditiveShare<P>],
         rng: &mut RNG,
@@ -187,7 +190,7 @@ where
 
         let num_chunks = (number_of_relus as f64 / 8192.0).ceil() as usize;
         for i in 0..num_chunks {
-            let in_msg: ClientGcMsgRcv = crate::bytes::deserialize(&mut reader)?;
+            let in_msg: ClientGcMsgRcv = crate::bytes::deserialize(reader)?;
             let (gc_chunks, r_wire_chunks) = in_msg.msg();
             if i < (num_chunks - 1) {
                 assert_eq!(gc_chunks.len(), 8192);
@@ -205,8 +208,11 @@ where
             .collect::<Vec<_>>();
 
         let labels = if number_of_relus != 0 {
+            let r = reader.get_mut_ref().remove(0);
+            let w = writer.get_mut_ref().remove(0);
+
             let ot_time = timer_start!(|| "OTs");
-            let mut channel = Channel::new(&mut reader, &mut writer);
+            let mut channel = Channel::new(r, w);
             let mut ot = OTReceiver::init(&mut channel, rng).expect("should work");
             let labels = ot
                 .receive(&mut channel, bs.as_slice(), rng)
@@ -230,8 +236,8 @@ where
         })
     }
 
-    pub fn online_server_protocol<'a, W: Write>(
-        writer: W,
+    pub fn online_server_protocol<'a, W: Write + Send>(
+        writer: &mut IMuxSync<W>,
         shares: &[AdditiveShare<P>],
         encoders: &[Encoder],
     ) -> Result<(), bincode::Error> {
@@ -260,8 +266,8 @@ where
     }
 
     /// Outputs shares for the next round's input.
-    pub fn online_client_protocol<R: Read>(
-        reader: R,
+    pub fn online_client_protocol<R: Read + Send>(
+        reader: &mut IMuxSync<R>,
         num_relus: usize,
         server_input_wires: &[Wire],
         client_input_wires: &[Wire],

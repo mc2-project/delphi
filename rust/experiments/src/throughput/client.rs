@@ -27,11 +27,16 @@ pub fn nn_client<R: RngCore + CryptoRng>(
         let client_state = {
             // client's connection to server.
             let stream = TcpStream::connect(server_addr).expect("connecting to server failed");
-            let read_stream = BufReader::new(stream.try_clone().unwrap());
-            let write_stream = stream;
+            let mut read_stream = IMuxSync::new(vec![BufReader::new(stream.try_clone().unwrap())]);
+            let mut write_stream = IMuxSync::new(vec![stream]);
 
-            NNProtocol::offline_client_protocol(read_stream, write_stream, &architecture, rng)
-                .unwrap()
+            NNProtocol::offline_client_protocol(
+                &mut read_stream,
+                &mut write_stream,
+                &architecture,
+                rng,
+            )
+            .unwrap()
         };
         client_states.push(client_state);
     }
@@ -58,11 +63,12 @@ pub fn nn_client<R: RngCore + CryptoRng>(
                 let client_state = &client_states[0];
                 let start = std::time::Instant::now();
                 let stream = TcpStream::connect(server_addr).expect("connecting to server failed");
-                let read_stream = BufReader::new(stream.try_clone().unwrap());
-                let write_stream = stream;
+                let mut read_stream =
+                    IMuxSync::new(vec![BufReader::new(stream.try_clone().unwrap())]);
+                let mut write_stream = IMuxSync::new(vec![stream]);
                 let _ = NNProtocol::online_client_protocol(
-                    read_stream,
-                    write_stream,
+                    &mut read_stream,
+                    &mut write_stream,
                     &input,
                     architecture,
                     &client_state,

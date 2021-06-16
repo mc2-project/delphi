@@ -1,12 +1,9 @@
 use crate::*;
 use neural_network::{ndarray::Array4, tensors::Input, NeuralArchitecture};
-use protocols::neural_network::NNProtocol;
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 use std::{
     cmp,
-    io::BufReader,
-    net::{TcpListener, TcpStream},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -32,73 +29,6 @@ pub fn softmax(x: &Input<TenBitExpFP>) -> Input<TenBitExpFP> {
     return e_x;
 }
 
-pub fn nn_client(
-    server_addr: &str,
-    architecture: &NeuralArchitecture<TenBitAS, TenBitExpFP>,
-    input: Input<TenBitExpFP>,
-) -> Input<TenBitExpFP> {
-    let mut rng = ChaChaRng::from_seed(RANDOMNESS);
-    let client_state = {
-        // client's connection to server.
-        // A bit hacky but just in case the server thread doesn't spawn in time
-        let mut ctr = 0;
-        let stream = loop {
-            if let Ok(stream) = TcpStream::connect(server_addr) {
-                break stream;
-            }
-            if ctr > 10 {
-                panic!("Server connection refused")
-            }
-            ctr += 1;
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        };
-        let read_stream = BufReader::new(stream.try_clone().unwrap());
-        let write_stream = stream;
-
-        NNProtocol::offline_client_protocol(read_stream, write_stream, &architecture, &mut rng)
-            .unwrap()
-    };
-
-    let stream = TcpStream::connect(server_addr).expect("connecting to server failed");
-    let read_stream = BufReader::new(stream.try_clone().unwrap());
-    let write_stream = stream;
-    NNProtocol::online_client_protocol(
-        read_stream,
-        write_stream,
-        &input,
-        &architecture,
-        &client_state,
-    )
-    .unwrap()
-}
-
-pub fn nn_server(server_addr: &str, nn: &NeuralNetwork<TenBitAS, TenBitExpFP>) {
-    let mut rng = ChaChaRng::from_seed(RANDOMNESS);
-    let server_listener = TcpListener::bind(server_addr).unwrap();
-    let server_offline_state = {
-        let stream = server_listener
-            .incoming()
-            .next()
-            .unwrap()
-            .expect("server connection failed!");
-        let write_stream = stream.try_clone().unwrap();
-        let read_stream = BufReader::new(stream);
-        NNProtocol::offline_server_protocol(read_stream, write_stream, &nn, &mut rng).unwrap()
-    };
-
-    let _ = {
-        let stream = server_listener
-            .incoming()
-            .next()
-            .unwrap()
-            .expect("server connection failed!");
-        let write_stream = stream.try_clone().unwrap();
-        let read_stream = BufReader::new(stream);
-        NNProtocol::online_server_protocol(read_stream, write_stream, &nn, &server_offline_state)
-            .unwrap()
-    };
-}
-
 pub fn run(
     network: NeuralNetwork<TenBitAS, TenBitExpFP>,
     architecture: NeuralArchitecture<TenBitAS, TenBitExpFP>,
@@ -122,10 +52,17 @@ pub fn run(
         let port_off = port_idx.fetch_add(1, Ordering::SeqCst);
         let server_addr = format!("127.0.0.1:{}", base_port + port_off);
 
+        let mut server_rng = ChaChaRng::from_seed(RANDOMNESS);
+        let mut client_rng = ChaChaRng::from_seed(RANDOMNESS);
         let mut client_output = Output::zeros((1, 10, 0, 0));
         crossbeam::thread::scope(|s| {
-            let server_output = s.spawn(|_| nn_server(&server_addr, &network));
-            client_output = nn_client(&server_addr, &architecture, (images[i].clone()).into());
+            let server_output = s.spawn(|_| nn_server(&server_addr, &network, &mut server_rng));
+            client_output = nn_client(
+                &server_addr,
+                &architecture,
+                (images[i].clone()).into(),
+                &mut client_rng,
+            );
             server_output.join().unwrap();
         })
         .unwrap();

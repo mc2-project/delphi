@@ -1,5 +1,4 @@
 use clap::{App, Arg, ArgMatches};
-use experiments::resnet32::construct_resnet_32;
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 
@@ -9,13 +8,13 @@ const RANDOMNESS: [u8; 32] = [
 ];
 
 fn get_args() -> ArgMatches<'static> {
-    App::new("resnet32-server")
+    App::new("gc-server")
         .arg(
-            Arg::with_name("layers")
-                .short("l")
-                .long("layers")
+            Arg::with_name("model")
+                .short("m")
+                .long("model")
                 .takes_value(true)
-                .help("Number of polynomial layers (6/12/14/16/18/20/22/24/26)")
+                .help("MNIST (0), MiniONN(1)")
                 .required(true),
         )
         .arg(
@@ -23,22 +22,24 @@ fn get_args() -> ArgMatches<'static> {
                 .short("p")
                 .long("port")
                 .takes_value(true)
-                .help("Server port (default 8000)")
+                .help("Port to listen on (default 8000)")
                 .required(false),
         )
         .get_matches()
 }
 
 fn main() {
-    let vs = tch::nn::VarStore::new(tch::Device::cuda_if_available());
     let mut rng = ChaChaRng::from_seed(RANDOMNESS);
     let args = get_args();
 
-    let layers = clap::value_t!(args.value_of("layers"), usize).unwrap();
     let port = args.value_of("port").unwrap_or("8000");
     let server_addr = format!("0.0.0.0:{}", port);
 
-    let network = construct_resnet_32(Some(&vs.root()), 1, layers, &mut rng);
+    let model = clap::value_t!(args.value_of("model"), usize).unwrap();
+    assert!(model == 0 || model == 1);
+    let mnist = [9216, 1024, 100].iter().sum();
+    let minionn = [65536, 65536, 16384, 16384, 4096, 4096, 1024].iter().sum();
+    let activations: usize = if model == 0 { mnist } else { minionn };
 
-    experiments::nn_server(&server_addr, &network, &mut rng);
+    experiments::latency::server::gc(&server_addr, activations, &mut rng);
 }

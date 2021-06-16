@@ -308,8 +308,8 @@ mod gc {
 mod linear {
     use super::*;
     use crate::linear_layer::*;
-    use neural_network::{layers::*, tensors::*, Evaluate};
     use ndarray::s;
+    use neural_network::{layers::*, tensors::*, Evaluate};
     use std::io::{BufReader, BufWriter};
 
     #[test]

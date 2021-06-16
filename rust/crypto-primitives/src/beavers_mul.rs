@@ -81,7 +81,8 @@ where
     ) -> AdditiveShare<T>;
 }
 
-/// An implementation of Beaver's multiplication algorithm for shares of `FixedPoint<P>`.
+/// An implementation of Beaver's multiplication algorithm for shares of
+/// `FixedPoint<P>`.
 pub struct FPBeaversMul<P: FixedPointParameters>(PhantomData<P>);
 
 impl<P: FixedPointParameters> BeaversMul<FixedPoint<P>> for FPBeaversMul<P> {

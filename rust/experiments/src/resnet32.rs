@@ -203,21 +203,5 @@ pub fn construct_resnet_32<R: RngCore + CryptoRng>(
     network.layers.push(Layer::LL(fc));
     assert!(network.validate());
 
-    // println!("NLLs:");
-    // for layer in &network.layers {
-    //     if let Layer::NLL(l) = layer {
-    //         println!("layer input: {:?}", layer.input_dimensions());
-    //     }
-    // }
-
-    // println!("Convs:");
-    // for layer in &network.layers {
-    //     if let Layer::LL(LinearLayer::Conv2d { dims, params }) = layer {
-    //         println!("Layer input dims: {:?}", layer.input_dimensions());
-    //         println!("Kernel dims: {:?}", params.kernel.dim());
-    //         println!();
-    //     }
-    // }
-
     network
 }

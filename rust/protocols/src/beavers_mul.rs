@@ -7,6 +7,7 @@ use algebra::{
     FpParameters, UniformRandom,
 };
 use crypto_primitives::{BeaversMul, BlindedSharedInputs};
+use io_utils::IMuxSync;
 use protocols_sys::{
     client_triples::SEALClientTriples, server_triples::SEALServerTriples, ClientFHE, ServerFHE,
 };
@@ -47,16 +48,16 @@ where
     P::Field: PrimeField<BigInt = <<P::Field as PrimeField>::Params as FpParameters>::BigInt>,
 {
     pub(crate) fn offline_server_protocol<M, R, W, RNG>(
-        reader: R,
-        writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         sfhe: &ServerFHE,
         num_triples: usize,
         rng: &mut RNG,
     ) -> Result<Vec<Triple<P>>, bincode::Error>
     where
         M: BeaversMul<FixedPoint<P>>,
-        R: Read,
-        W: Write,
+        R: Read + Send,
+        W: Write + Send,
         RNG: RngCore + CryptoRng,
     {
         // Generate shares for a, b, and c
@@ -103,12 +104,12 @@ where
 
     pub(crate) fn offline_client_protocol<
         M: BeaversMul<FixedPoint<P>>,
-        R: Read,
-        W: Write,
+        R: Read + Send,
+        W: Write + Send,
         RNG: RngCore + CryptoRng,
     >(
-        reader: R,
-        writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         cfhe: &ClientFHE,
         num_triples: usize,
         rng: &mut RNG,
@@ -155,8 +156,8 @@ where
 
     pub fn online_server_protocol<M: BeaversMul<FixedPoint<P>>, R: Read + Send, W: Write + Send>(
         party_index: usize,
-        mut reader: R,
-        mut writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         x_s: &[AdditiveShare<P>],
         y_s: &[AdditiveShare<P>],
         triples: &[Triple<P>],
@@ -174,14 +175,13 @@ where
             s.spawn(|_| {
                 for msg_contents in self_blinded_and_shared.chunks(8192) {
                     let sent_message = OnlineMsgSend::new(&msg_contents);
-                    crate::bytes::serialize(&mut writer, &sent_message).unwrap();
-                    writer.flush().unwrap();
+                    crate::bytes::serialize(writer, &sent_message).unwrap();
                 }
             });
             s.spawn(|_| {
                 let num_chunks = (triples.len() as f64 / 8192.0).ceil() as usize;
                 for _ in 0..num_chunks {
-                    let in_msg: OnlineMsgRcv<_> = crate::bytes::deserialize(&mut reader).unwrap();
+                    let in_msg: OnlineMsgRcv<_> = crate::bytes::deserialize(reader).unwrap();
                     let shares = in_msg.msg();
                     result.extend(shares);
                 }
@@ -200,8 +200,8 @@ where
 
     pub fn online_client_protocol<M: BeaversMul<FixedPoint<P>>, R: Read + Send, W: Write + Send>(
         party_index: usize,
-        mut reader: R,
-        mut writer: W,
+        reader: &mut IMuxSync<R>,
+        writer: &mut IMuxSync<W>,
         x_s: &[AdditiveShare<P>],
         y_s: &[AdditiveShare<P>],
         triples: &[Triple<P>],
@@ -219,7 +219,7 @@ where
             s.spawn(|_| {
                 let num_chunks = (triples.len() as f64 / 8192.0).ceil() as usize;
                 for _ in 0..num_chunks {
-                    let in_msg: OnlineMsgRcv<_> = crate::bytes::deserialize(&mut reader).unwrap();
+                    let in_msg: OnlineMsgRcv<_> = crate::bytes::deserialize(reader).unwrap();
                     let shares = in_msg.msg();
                     result.extend(shares);
                 }
@@ -228,8 +228,7 @@ where
                 // TODO: use rayon to spawn this on a different thread.
                 for msg_contents in self_blinded_and_shared.chunks(8192) {
                     let sent_message = OnlineMsgSend::new(&msg_contents);
-                    crate::bytes::serialize(&mut writer, &sent_message).unwrap();
-                    writer.flush().unwrap();
+                    crate::bytes::serialize(writer, &sent_message).unwrap();
                 }
             });
         });

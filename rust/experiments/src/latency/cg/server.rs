@@ -1,5 +1,5 @@
 use clap::{App, Arg, ArgMatches};
-use experiments::mnist::construct_mnist;
+use experiments::{minionn::construct_minionn, mnist::construct_mnist};
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 
@@ -9,21 +9,13 @@ const RANDOMNESS: [u8; 32] = [
 ];
 
 fn get_args() -> ArgMatches<'static> {
-    App::new("mnist-client")
+    App::new("cg-server")
         .arg(
-            Arg::with_name("ip")
-                .short("i")
-                .long("ip")
+            Arg::with_name("model")
+                .short("m")
+                .long("model")
                 .takes_value(true)
-                .help("Server IP address")
-                .required(true),
-        )
-        .arg(
-            Arg::with_name("layers")
-                .short("l")
-                .long("layers")
-                .takes_value(true)
-                .help("Number of polynomial layers (0-3)")
+                .help("MNIST (0), MiniONN(1)")
                 .required(true),
         )
         .arg(
@@ -31,7 +23,7 @@ fn get_args() -> ArgMatches<'static> {
                 .short("p")
                 .long("port")
                 .takes_value(true)
-                .help("Server port (default 8000)")
+                .help("Port to listen on (default 8000)")
                 .required(false),
         )
         .get_matches()
@@ -42,13 +34,15 @@ fn main() {
     let mut rng = ChaChaRng::from_seed(RANDOMNESS);
     let args = get_args();
 
-    let ip = args.value_of("ip").unwrap();
-    let layers = clap::value_t!(args.value_of("layers"), usize).unwrap();
     let port = args.value_of("port").unwrap_or("8000");
-    let server_addr = format!("{}:{}", ip, port);
+    let server_addr = format!("0.0.0.0:{}", port);
 
-    let network = construct_mnist(Some(&vs.root()), 1, layers, &mut rng);
-    let architecture = (&network).into();
+    let model = clap::value_t!(args.value_of("model"), usize).unwrap();
+    let network = match model {
+        0 => construct_mnist(Some(&vs.root()), 1, 0, &mut rng),
+        1 => construct_minionn(Some(&vs.root()), 1, 0, &mut rng),
+        _ => panic!(),
+    };
 
-    experiments::latency::client::nn_client(&server_addr, architecture, &mut rng);
+    experiments::latency::server::cg(&server_addr, network);
 }

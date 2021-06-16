@@ -22,10 +22,11 @@ pub fn nn_server<R: RngCore + CryptoRng>(
                 .next()
                 .unwrap()
                 .expect("server connection failed!");
-            let write_stream = stream.try_clone().unwrap();
-            let read_stream = BufReader::new(stream);
+            let mut read_stream = IMuxSync::new(vec![BufReader::new(stream.try_clone().unwrap())]);
+            let mut write_stream = IMuxSync::new(vec![stream]);
 
-            NNProtocol::offline_server_protocol(read_stream, write_stream, &nn, rng).unwrap()
+            NNProtocol::offline_server_protocol(&mut read_stream, &mut write_stream, &nn, rng)
+                .unwrap()
         };
         server_states.push(server_state);
     }
@@ -34,12 +35,13 @@ pub fn nn_server<R: RngCore + CryptoRng>(
         let mut results = Vec::new();
         for stream in server_listener.incoming() {
             let result = s.spawn(|_| {
-                let read_stream = stream.expect("server connection failed!");
-                let write_stream = read_stream.try_clone().unwrap();
-                let read_stream = BufReader::new(read_stream);
+                let stream = stream.expect("server connection failed!");
+                let mut read_stream =
+                    IMuxSync::new(vec![BufReader::new(stream.try_clone().unwrap())]);
+                let mut write_stream = IMuxSync::new(vec![stream]);
                 NNProtocol::online_server_protocol(
-                    read_stream,
-                    write_stream,
+                    &mut read_stream,
+                    &mut write_stream,
                     &nns[0].1,
                     &server_states[0],
                 )
