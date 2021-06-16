@@ -25,7 +25,7 @@
     unsafe_code
 )]
 #![deny(unsafe_code)]
-#![feature(const_fn)]
+#![feature(const_fn_trait_bound)]
 
 #[macro_use]
 extern crate derivative;
