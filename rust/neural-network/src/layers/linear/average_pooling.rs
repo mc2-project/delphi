@@ -7,11 +7,11 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct AvgPoolParams<F, C> {
-    pub pool_h:     usize,
-    pub pool_w:     usize,
-    pub stride:     usize,
+    pub pool_h: usize,
+    pub pool_w: usize,
+    pub stride: usize,
     pub normalizer: C,
-    _variable:      PhantomData<F>,
+    _variable: PhantomData<F>,
 }
 
 impl<F, C> AvgPoolParams<F, C>

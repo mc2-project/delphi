@@ -10,11 +10,11 @@ use tch::nn;
 
 #[derive(Debug)]
 pub struct FullyConnectedParams<F, C> {
-    pub weights:     Kernel<C>,
-    pub bias:        Kernel<C>,
-    pub tch_config:  Option<nn::Linear>,
+    pub weights: Kernel<C>,
+    pub bias: Kernel<C>,
+    pub tch_config: Option<nn::Linear>,
     pub eval_method: crate::EvalMethod,
-    _variable:       PhantomData<F>,
+    _variable: PhantomData<F>,
 }
 
 unsafe impl<F, C> Send for FullyConnectedParams<F, C> {}

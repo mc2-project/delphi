@@ -19,19 +19,15 @@ typedef vector<u64> uv64;
 
 Metadata fc_metadata(int slot_count, int vector_len, int matrix_h);
 
-Ciphertext preprocess_vec(const u64* input, const Metadata& data, Encryptor& encryptor, BatchEncoder& batch_encoder);
+Plaintext preprocess_vec(const Metadata& data, BatchEncoder& batch_encoder, const u64* input);
 
 vector<Plaintext> preprocess_matrix(const u64* const* matrix, const Metadata& data, BatchEncoder& batch_encoder);
 
-Ciphertext fc_preprocess_noise(const u64* secret_share, const Metadata& data, Encryptor& encryptor, BatchEncoder& batch_encoder);
+Plaintext fc_preprocess_noise(const Metadata& data, BatchEncoder& batch_encoder, const u64* secret_share);
     
 Ciphertext fc_online(Ciphertext& ct, vector<Plaintext>& enc_mat, const Metadata& data, Evaluator& evaluator, GaloisKeys& gal_keys,
-        RelinKeys& relin_keys, Ciphertext& zero, Ciphertext& enc_noise);
+        RelinKeys& relin_keys, Ciphertext& zero);
    
 u64* fc_postprocess(Ciphertext& result, const Metadata& data, BatchEncoder& batch_encoder, Decryptor& decryptor);
-
-u64* HE_fc(u64* input, u64** matrix, int vector_len, int matrix_h);
-
-uv64 fc_plain(u64* vec, u64** mat, int vector_len, int matrix_h);
 
 #endif

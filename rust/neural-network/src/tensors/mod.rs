@@ -83,6 +83,23 @@ impl<I> Input<I> {
         result
     }
 
+    /// If the underlying elements of `Input` are `FixedPoint` elements having
+    /// base field `Fp64` backed by a `u64` we can convert to Input<u64>
+    pub fn to_repr<P>(&self) -> Input<u64>
+    where
+        P: FixedPointParameters,
+        <P::Field as PrimeField>::Params: Fp64Parameters,
+        P::Field: PrimeField<BigInt = <<P::Field as PrimeField>::Params as FpParameters>::BigInt>,
+        I: Copy + Into<FixedPoint<P>>,
+    {
+        let mut input: Input<u64> = Input::zeros(self.dim());
+        input.iter_mut().zip(self).for_each(|(e1, e2)| {
+            let fp: FixedPoint<P> = Into::<FixedPoint<P>>::into(*e2);
+            *e1 = fp.inner.into_repr().0;
+        });
+        input
+    }
+
     pub fn from_tensor<P>(tensor: Tensor) -> Option<Self>
     where
         P: FixedPointParameters,

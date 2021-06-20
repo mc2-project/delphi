@@ -12,7 +12,7 @@ use protocols::{
     gc::ClientGcMsgRcv,
     linear_layer::{LinearProtocol, OfflineClientKeySend},
 };
-use protocols_sys::{key_share::KeyShare, ClientFHE};
+use protocols_sys::*;
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 use scuttlebutt::Channel;
@@ -45,7 +45,7 @@ pub fn nn_client<R: RngCore + CryptoRng>(
 fn cg_helper<R: RngCore + CryptoRng>(
     layers: &[usize],
     architecture: &NeuralArchitecture<TenBitAS, TenBitExpFP>,
-    mut cfhe: Option<ClientFHE>,
+    cfhe: ClientFHE,
     reader: &mut IMuxSync<CountingIO<BufReader<TcpStream>>>,
     writer: &mut IMuxSync<CountingIO<BufWriter<TcpStream>>>,
     rng: &mut R,
@@ -57,19 +57,39 @@ fn cg_helper<R: RngCore + CryptoRng>(
             LayerInfo::NLL(_dims, NonLinearLayerInfo::ReLU) => panic!(),
             LayerInfo::NLL(_dims, NonLinearLayerInfo::PolyApprox { .. }) => panic!(),
             LayerInfo::LL(dims, linear_layer_info) => {
+                let input_dims = dims.input_dimensions();
+                let output_dims = dims.output_dimensions();
                 let (in_share, mut out_share) = match &linear_layer_info {
                     LinearLayerInfo::Conv2d { .. } | LinearLayerInfo::FullyConnected => {
-                        LinearProtocol::<TenBitExpParams>::offline_client_protocol(
+                        let mut cg_handler = match &linear_layer_info {
+                            LinearLayerInfo::Conv2d { .. } => {
+                                SealClientCG::Conv2D(client_cg::Conv2D::new(
+                                    &cfhe,
+                                    linear_layer_info,
+                                    input_dims,
+                                    output_dims,
+                                ))
+                            }
+                            LinearLayerInfo::FullyConnected => {
+                                SealClientCG::FullyConnected(client_cg::FullyConnected::new(
+                                    &cfhe,
+                                    linear_layer_info,
+                                    input_dims,
+                                    output_dims,
+                                ))
+                            }
+                            _ => unreachable!(),
+                        };
+                        LinearProtocol::offline_client_protocol(
                             reader,
                             writer,
-                            dims.input_dimensions(),
-                            dims.output_dimensions(),
-                            &linear_layer_info,
+                            input_dims,
+                            output_dims,
+                            &mut cg_handler,
                             rng,
-                            &mut cfhe,
                         )
                         .unwrap()
-                    },
+                    }
                     _ => {
                         // AvgPool and Identity don't require an offline communication
                         if out_shares.keys().any(|k| *k == &(i - 1)) {
@@ -86,7 +106,7 @@ fn cg_helper<R: RngCore + CryptoRng>(
                                 Output::zeros(dims.output_dimensions()),
                             )
                         }
-                    },
+                    }
                 };
 
                 // We reduce here becase the input to future layers requires
@@ -99,7 +119,7 @@ fn cg_helper<R: RngCore + CryptoRng>(
                 in_shares.insert(i, in_share);
                 // -(Lr + s)
                 out_shares.insert(i, out_share);
-            },
+            }
         }
     }
 }
@@ -113,7 +133,6 @@ pub fn cg(server_addr: &str, architecture: NeuralArchitecture<TenBitAS, TenBitEx
     let key_time = timer_start!(|| "Keygen");
     let mut key_share = KeyShare::new();
     let (cfhe, keys_vec) = key_share.generate();
-    let cfhe = Some(cfhe);
 
     let sent_message = OfflineClientKeySend::new(&keys_vec);
     protocols::bytes::serialize(&mut w1, &sent_message).unwrap();
@@ -122,7 +141,6 @@ pub fn cg(server_addr: &str, architecture: NeuralArchitecture<TenBitAS, TenBitEx
     let key_time = timer_start!(|| "Keygen");
     let mut key_share = KeyShare::new();
     let (cfhe_2, keys_vec) = key_share.generate();
-    let cfhe_2 = Some(cfhe_2);
 
     let sent_message = OfflineClientKeySend::new(&keys_vec);
     protocols::bytes::serialize(&mut w1, &sent_message).unwrap();

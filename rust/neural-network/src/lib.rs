@@ -63,7 +63,7 @@ impl EvalMethod {
 #[derive(Debug, Default)]
 pub struct NeuralNetwork<F, C = F> {
     pub eval_method: EvalMethod,
-    pub layers:      Vec<Layer<F, C>>,
+    pub layers: Vec<Layer<F, C>>,
 }
 
 /// Describes the architecture and topology of the network

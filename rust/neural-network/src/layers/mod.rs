@@ -16,7 +16,7 @@ use Layer::*;
 pub struct LayerDims {
     /// Dimension of the input to a layer: `(batch_size, channels, height,
     /// width)`
-    pub input_dims:  (usize, usize, usize, usize),
+    pub input_dims: (usize, usize, usize, usize),
     /// Dimension of the output of a layer: `(batch_size, channels, height,
     /// width)`
     pub output_dims: (usize, usize, usize, usize),
@@ -127,34 +127,34 @@ impl<'a, F, C: Clone> From<&'a Layer<F, C>> for LayerInfo<F, C> {
             LL(LinearLayer::Conv2d { dims, params }) => LayerInfo::LL(
                 *dims,
                 LinearLayerInfo::Conv2d {
-                    kernel:  params.kernel.dim(),
+                    kernel: params.kernel.dim(),
                     padding: params.padding,
-                    stride:  params.stride,
+                    stride: params.stride,
                 },
             ),
             // TODO: Is there a way to match all of these with one statement
             LL(LinearLayer::FullyConnected { dims, params: _ }) => {
                 LayerInfo::LL(*dims, LinearLayerInfo::FullyConnected)
-            },
+            }
             LL(LinearLayer::AvgPool { dims, params }) => LayerInfo::LL(
                 *dims,
                 LinearLayerInfo::AvgPool {
-                    pool_h:     params.pool_h,
-                    pool_w:     params.pool_w,
-                    stride:     params.stride,
+                    pool_h: params.pool_h,
+                    pool_w: params.pool_w,
+                    stride: params.stride,
                     normalizer: params.normalizer.clone(),
-                    _variable:  std::marker::PhantomData,
+                    _variable: std::marker::PhantomData,
                 },
             ),
             LL(LinearLayer::Identity { dims }) => {
                 LayerInfo::LL(*dims, LinearLayerInfo::FullyConnected)
-            },
+            }
             NLL(NonLinearLayer::ReLU(dims)) => LayerInfo::NLL(*dims, NonLinearLayerInfo::ReLU),
             NLL(NonLinearLayer::PolyApprox { dims, poly, .. }) => LayerInfo::NLL(
                 *dims,
                 NonLinearLayerInfo::PolyApprox {
                     poly: poly.clone(),
-                    _v:   std::marker::PhantomData,
+                    _v: std::marker::PhantomData,
                 },
             ),
         }

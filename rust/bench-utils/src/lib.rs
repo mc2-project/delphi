@@ -142,7 +142,7 @@ pub mod inner {
                 } else {
                     PAD_CHAR
                 }
-            },
+            }
             Err(_) => PAD_CHAR,
         };
         for _ in 0..indent_amount {

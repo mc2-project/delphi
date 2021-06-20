@@ -207,7 +207,7 @@ macro_rules! bigint_impl {
         }
 
         pub struct $iter_name {
-            int:   $name,
+            int: $name,
             index: usize,
         }
 
@@ -234,7 +234,7 @@ macro_rules! bigint_impl {
             #[inline]
             fn into_iter(self) -> Self::IntoIter {
                 Self::IntoIter {
-                    int:   self,
+                    int: self,
                     index: 0,
                 }
             }

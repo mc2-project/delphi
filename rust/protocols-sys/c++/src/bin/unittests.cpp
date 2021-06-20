@@ -17,87 +17,23 @@
 
 #include "math.h"
 #include "conv2d.h"
-#include "fc_layer.h"
-#include "im2col.h"
+#include "run_conv.cpp"
 
 using namespace std;
 
-bool pass = true;
-
-/* Runs plaintext and homomorphic convolution and compares result */
-bool run_conv(Image image, Filters filters, int image_h, int image_w, int filter_h,
-        int filter_w, int inp_chans, int out_chans, bool pad_valid, int stride_h,
-        int stride_w, Mode mode, bool verbose) {
-    chrono::high_resolution_clock::time_point time_start, time_end;
-
-    // Convert the raw pointer to an Eigen matrix for plaintext evaluation
-    EImage eimage(inp_chans);
-    for (int chan = 0; chan < inp_chans; chan++) {
-        EChannel echannel(image_h, image_w);
-        for (int idx = 0; idx < image_h*image_w; idx++)
-            echannel(idx/image_w, idx%image_h) = image[chan][idx];
-        eimage[chan] = echannel;
-    }
-
-    EFilters efilters(out_chans);
-    for (int o_chan = 0; o_chan < out_chans; o_chan++) {
-        EImage eimage(inp_chans);
-        for (int chan = 0; chan < inp_chans; chan++) {
-            EChannel echannel(filter_h, filter_w);
-            for (int idx = 0; idx < filter_h*filter_w; idx++) {
-                echannel(idx/filter_h, idx%filter_w) = filters[o_chan][chan][idx];
-            }
-            eimage[chan] = echannel;
-        }
-        efilters[o_chan] = eimage;
-    }
-
-    cout << "Plaintext:\n";
-    time_start = chrono::high_resolution_clock::now();
-    EImage result = im2col_conv2D(&eimage, &efilters, pad_valid, stride_h, stride_w);
-    time_end = chrono::high_resolution_clock::now();
-    
-    print_image(&result);
-    
-    auto time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << "Done [" << time_diff.count() << " microseconds]\n\n\n";
-
-    int output_h = result[0].rows();
-    int output_w = result[0].cols();
-
-    cout << "Homomorphic:\n";
-    time_start = chrono::high_resolution_clock::now();
-    Image enc_result = HE_packed(image, filters, image_h, image_w, filter_h, filter_w,
-            inp_chans, out_chans, pad_valid, stride_h, stride_w, mode);
-    time_end = chrono::high_resolution_clock::now();
-    
-    print(enc_result, out_chans, output_h, output_w);
-
-    for (int i = 0; i < out_chans; i++) {
-        for (int j = 0; j < output_h * output_w; j++) {
-            if (result[i](j/output_w,j%output_w) != enc_result[i][j])
-                pass = false;
-        }
-    }
-    time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << "Done [" << time_diff.count() << " microseconds]\n\n\n";
-    
-    return pass;
-}
-
 /* Runs convolution with provided parameters on multiple conv configurations */
 void test_conv(Image image, Filters filters, int image_h, int image_w, int filter_h,
-        int filter_w, int inp_chans, int out_chans, Mode mode, bool verbose) {
+        int filter_w, int inp_chans, int out_chans, bool verbose) {
  
-    string mode_name = (mode == Mode::Output) ? "Output" : "Input";
     cout << "\n\n--------------------------------------------\n";
     cout << "Input: (" << image_h << ", " << image_w << ", " << inp_chans
         << "), Output: (" << filter_h << ", " << filter_w << ", " <<
-        out_chans << ") - Mode: " << mode_name << "\n";
+        out_chans << ")\n";
     cout << "--------------------------------------------\n\n";
 
+    // Remove if you want verbose debugging
     if (!verbose)
-        cout.setstate(std::ios_base::failbit);
+      cout.setstate(std::ios_base::failbit);
 
     bool pass = true;
 
@@ -105,53 +41,23 @@ void test_conv(Image image, Filters filters, int image_h, int image_w, int filte
     cout << "Config 1 - padding = VALID, stride = (1, 1)\n";
     cout << "--------------------------------------------\n\n";
     pass = pass & run_conv(image, filters, image_h, image_w, filter_h, filter_w,
-            inp_chans, out_chans, 1, 1, 1, mode, verbose);
+            inp_chans, out_chans, 1, 1, 1, verbose);
 
     cout << "\n\n--------------------------------------------\n";
     cout << "Config 2 - padding = VALID, stride = (2, 2)\n";
     cout << "--------------------------------------------\n\n";
     pass = pass & run_conv(image, filters, image_h, image_w, filter_h, filter_w,
-            inp_chans, out_chans, 1, 2, 2, mode, verbose);
+            inp_chans, out_chans, 1, 2, 2, verbose);
 
     cout << "\n\n--------------------------------------------\n";
     cout << "Config 3 - padding = SAME, stride = (1, 1)\n";
     cout << "--------------------------------------------\n\n";
     pass = pass & run_conv(image, filters, image_h, image_w, filter_h, filter_w,
-            inp_chans, out_chans, 0, 1, 1, mode, verbose);
-
-/* TODO: This doesn't work when either the input or output image is greater
- * than a half ciphertext. But this also is not a very common config
-    cout << "\n\n--------------------------------------------\n";
-    cout << "Config 4 - padding = SAME, stride = (2, 2)\n";
-    cout << "--------------------------------------------\n\n";
-    pass = pass & test_conv(image, filters, image_h, image_w, filter_h, filter_w,
-            inp_chans, out_chans, 0, 2, 2, mode, verbose);
-*/
+            inp_chans, out_chans, 0, 1, 1, verbose);
 
     cout.clear();
     cout << "Passing all: " << ((pass) ? "True" : "False") << endl;
 }
-
-
-void test_fc(u64* input, u64** matrix, int vector_len, int matrix_h) {
-    
-    uv64 result = fc_plain(input, matrix, vector_len, matrix_h);
-    u64* enc_result = HE_fc(input, matrix, vector_len, matrix_h);
-
-    cout << "Plaintext:\n [ ";
-    for (int i = 0; i < matrix_h; i++)
-        cout << result[i] << ", ";
-    cout << "]" << endl;
-
-    pass = true;
-    for (int i = 0; i < matrix_h; i++) {
-        if (result[i] != enc_result[i])
-            pass = false;
-    }
-
-    cout << ((pass) ? "PASS" : "FAIL") << endl;
-}
-
 
 void conv() {
     // Example 1
@@ -167,9 +73,7 @@ void conv() {
 
     Image filters0[] = { kernel0 };
 
-    test_conv(image0, filters0, 3, 3, 2, 2, 2, 1, Mode::InputConv, false);
-    test_conv(image0, filters0, 3, 3, 2, 2, 2, 1, Mode::Input, false);
-    test_conv(image0, filters0, 3, 3, 2, 2, 2, 1, Mode::Output, false);
+    test_conv(image0, filters0, 3, 3, 2, 2, 2, 1, false);
  
     // Example 2 - multiple filters
     u64 image2_c1[] = {0, 0, 0, 0, 1, 
@@ -224,9 +128,7 @@ void conv() {
 
     Image filters2[] = { kernel1, kernel2, kernel3 };
 
-    test_conv(image2, filters2, 5, 5, 3, 3, 3, 3, Mode::InputConv, false);
-    test_conv(image2, filters2, 5, 5, 3, 3, 3, 3, Mode::Input, false);
-    test_conv(image2, filters2, 5, 5, 3, 3, 3, 3, Mode::Output, false);
+    test_conv(image2, filters2, 5, 5, 3, 3, 3, 3, false);
 
 
     // Example 3 - multiple filters but output channel size > input channels
@@ -258,9 +160,7 @@ void conv() {
 
     Image filters5[] = { kernel8, kernel9, kernel10, kernel11 };
 
-    test_conv(image5, filters5, 4, 4, 2, 2, 3, 4, Mode::InputConv, false);
-    test_conv(image5, filters5, 4, 4, 2, 2, 3, 4, Mode::Input, false);
-    test_conv(image5, filters5, 4, 4, 2, 2, 3, 4, Mode::Output, false);
+    test_conv(image5, filters5, 4, 4, 2, 2, 3, 4, false);
 
     // Example 4 - Inp = Out but spans multiple halves
     u64 image6_c1[1024];
@@ -316,9 +216,7 @@ void conv() {
 
     Image filters6[] = { kernel12, kernel13, kernel14, kernel15, kernel16 };
 
-    test_conv(image6, filters6, 32, 32, 5, 5, 5, 5, Mode::InputConv, false);
-    test_conv(image6, filters6, 32, 32, 5, 5, 5, 5, Mode::Input, false);
-    test_conv(image6, filters6, 32, 32, 5, 5, 5, 5, Mode::Output, false);
+    test_conv(image6, filters6, 32, 32, 5, 5, 5, 5, false);
 
     // Example 5 - Inp < Out but spans multiple halves
     u64 ker17_c1[] = {0, 0, 6, 6, 0, 0, 0, 6, 6, 0, 0, 0, 6, 6, 0, 0, 0, 6, 6, 0, 0, 0, 6, 6, 0};
@@ -338,9 +236,7 @@ void conv() {
 
     Image filters8[] = {kernel12, kernel13, kernel14, kernel15, kernel16, kernel17, kernel18 };
 
-    test_conv(image6, filters8, 32, 32, 5, 5, 5, 7, Mode::InputConv, false);
-    test_conv(image6, filters8, 32, 32, 5, 5, 5, 7, Mode::Input, false);
-    test_conv(image6, filters8, 32, 32, 5, 5, 5, 7, Mode::Output, false);
+    test_conv(image6, filters8, 32, 32, 5, 5, 5, 7, false);
     
 
     // Example 6 - Inp = Out but spans multiple ciphertexts
@@ -381,16 +277,12 @@ void conv() {
 
     Image filters9[] = { kernel19, kernel20, kernel21, kernel22, kernel23, kernel24, kernel25, kernel26, kernel27 };
 
-    test_conv(image7, filters9, 32, 32, 5, 5, 9, 9, Mode::InputConv, false);
-    test_conv(image7, filters9, 32, 32, 5, 5, 9, 9, Mode::Input, false);
-    test_conv(image7, filters9, 32, 32, 5, 5, 9, 9, Mode::Output, false);
+    test_conv(image7, filters9, 32, 32, 5, 5, 9, 9, false);
 
     // Example 7 - Inp < Out but spans multiple ciphertexts
     Image filters10[] = {kernel19, kernel20, kernel21, kernel22, kernel23, kernel24, kernel25, kernel26, kernel27, kernel26 };
 
-    test_conv(image7, filters10, 32, 32, 5, 5, 9, 10, Mode::InputConv, false);
-    test_conv(image7, filters10, 32, 32, 5, 5, 9, 10, Mode::Input, false);
-    test_conv(image7, filters10, 32, 32, 5, 5, 9, 10, Mode::Output, false);
+    test_conv(image7, filters10, 32, 32, 5, 5, 9, 10, false);
 
     // Example 8 - Inp = Out but spans multiple ciphertexts and halves
     Channel image8[] = { image6_c1, image6_c2, image6_c3, image6_c4, image6_c5, image7_c6, image7_c7, image7_c8, image7_c9,
@@ -426,44 +318,18 @@ void conv() {
     Image filters11[] = { kernel28, kernel29, kernel30, kernel31, kernel32, kernel33, kernel34, kernel35, kernel36, kernel35,
                          kernel34, kernel33, kernel32, kernel31, kernel30};
 
-    test_conv(image8, filters11, 32, 32, 5, 5, 15, 15, Mode::InputConv, false);
-    test_conv(image8, filters11, 32, 32, 5, 5, 15, 15, Mode::Input, false);
-    test_conv(image8, filters11, 32, 32, 5, 5, 15, 15, Mode::Output, false);
+    test_conv(image8, filters11, 32, 32, 5, 5, 15, 15, false);
 
 
     // Example 9 - Inp < Out but spans multiple ciphertexts and halves
     Image filters12[] = {kernel28, kernel29, kernel30, kernel31, kernel32, kernel33, kernel34, kernel35, kernel36, kernel35,
                          kernel34, kernel33, kernel32, kernel31, kernel30, kernel29, kernel28};
 
-    test_conv(image8, filters12, 32, 32, 5, 5, 15, 17, Mode::InputConv, false);
-    test_conv(image8, filters12, 32, 32, 5, 5, 15, 17, Mode::Input, false);
-    test_conv(image8, filters12, 32, 32, 5, 5, 15, 17, Mode::Output, false);
+    test_conv(image8, filters12, 32, 32, 5, 5, 15, 17, false);
 }
 
-
-void fc() {
-    // Example 1
-    int num_rows = 100;
-    int num_cols = 1024;
-
-    uv64 vec(num_cols);
-    for (int i = 0; i < num_cols; i++)
-        vec[i] = 2;
-
-    vector<u64*> matrix(num_rows);
-    for (int i = 0; i < num_rows; i++) {
-        matrix[i] = new u64[num_cols];
-        for (int j = 0; j < num_cols; j++)
-            matrix[i][j] = i*num_cols + j;
-    }
-
-    test_fc(vec.data(), matrix.data(), num_cols, num_rows);
-}
-
-    
 int main()
 {
     conv();
-    fc();
     return 0;
 }

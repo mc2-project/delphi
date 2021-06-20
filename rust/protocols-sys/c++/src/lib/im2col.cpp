@@ -4,6 +4,7 @@
 #include <math.h>
 #include "seal/seal.h"
 #include "im2col.h"
+#include "interface.h"
 
 #include <bitset>
 
@@ -197,19 +198,22 @@ EImage im2col_HE_naive(EImage *image, EFilters *filters, bool pad_valid, int str
     int additions = 0;
     
     // Param and key gen
-    EncryptionParameters parms(scheme_type::BFV);
+    EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(8192);
     parms.set_coeff_modulus(CoeffModulus::BFVDefault(8192));
-    parms.set_plain_modulus(2061584302081);
-    auto context = SEALContext::Create(parms);
+    parms.set_plain_modulus(PLAINTEXT_MODULUS);
+    auto context = SEALContext(parms);
     
     KeyGenerator keygen(context);
-    auto public_key = keygen.public_key();
+    PublicKey public_key;
+    keygen.create_public_key(public_key);
     auto secret_key = keygen.secret_key();
     // Parameter are large enough that we should be fine with these at max
     // decomposition
-    auto relin_keys = keygen.relin_keys();
-    auto gal_keys = keygen.galois_keys();
+    GaloisKeys gal_keys;
+    RelinKeys relin_keys;
+    keygen.create_relin_keys(relin_keys);
+    keygen.create_galois_keys(gal_keys);
 
     Encryptor encryptor(context, public_key);
     Evaluator evaluator(context);
@@ -329,19 +333,22 @@ EImage im2col_HE_IP(EImage *image, EFilters *filters, bool pad_valid, int stride
     time_start = chrono::high_resolution_clock::now();
 
     //---------------Param and Key Generation---------------
-    EncryptionParameters parms(scheme_type::BFV);
+    EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(8192);
     parms.set_coeff_modulus(CoeffModulus::BFVDefault(8192));
-    parms.set_plain_modulus(2061584302081);
-    auto context = SEALContext::Create(parms);
+    parms.set_plain_modulus(PLAINTEXT_MODULUS);
+    auto context = SEALContext(parms);
 
     KeyGenerator keygen(context);
-    auto public_key = keygen.public_key();
+    PublicKey public_key;
+    keygen.create_public_key(public_key);
     auto secret_key = keygen.secret_key();
     // Parameter are large enough that we should be fine with these at max
     // decomposition
-    auto relin_keys = keygen.relin_keys();
-    auto gal_keys = keygen.galois_keys();
+    GaloisKeys gal_keys;
+    RelinKeys relin_keys;
+    keygen.create_relin_keys(relin_keys);
+    keygen.create_galois_keys(gal_keys);
 
     Encryptor encryptor(context, public_key);
     Evaluator evaluator(context);

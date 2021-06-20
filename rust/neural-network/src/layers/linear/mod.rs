@@ -29,15 +29,15 @@ mod tests;
 #[derive(Debug)]
 pub enum LinearLayer<F, C> {
     Conv2d {
-        dims:   LayerDims,
+        dims: LayerDims,
         params: Conv2dParams<F, C>,
     },
     FullyConnected {
-        dims:   LayerDims,
+        dims: LayerDims,
         params: FullyConnectedParams<F, C>,
     },
     AvgPool {
-        dims:   LayerDims,
+        dims: LayerDims,
         params: AvgPoolParams<F, C>,
     },
     Identity {
@@ -48,17 +48,17 @@ pub enum LinearLayer<F, C> {
 #[derive(Debug, Clone)]
 pub enum LinearLayerInfo<F, C> {
     Conv2d {
-        kernel:  (usize, usize, usize, usize),
+        kernel: (usize, usize, usize, usize),
         padding: Padding,
-        stride:  usize,
+        stride: usize,
     },
     FullyConnected,
     AvgPool {
-        pool_h:     usize,
-        pool_w:     usize,
-        stride:     usize,
+        pool_h: usize,
+        pool_w: usize,
+        stride: usize,
         normalizer: C,
-        _variable:  PhantomData<F>,
+        _variable: PhantomData<F>,
     },
     Identity,
 }
@@ -128,7 +128,7 @@ impl<F, C> LinearLayer<F, C> {
         match self {
             Conv2d { dims: _, params: p } => {
                 p.conv2d_naive(input, output);
-            },
+            }
             AvgPool { dims: _, params: p } => p.avg_pool_naive(input, output),
             FullyConnected { dims: _, params: p } => p.fully_connected_naive(input, output),
             Identity { dims: _ } => {
@@ -137,7 +137,7 @@ impl<F, C> LinearLayer<F, C> {
                 for elem in output.iter_mut() {
                     *elem = *elem * one;
                 }
-            },
+            }
         }
     }
 
@@ -166,7 +166,7 @@ where
             EvalMethod::Naive => self.evaluate_naive(input, &mut output),
             EvalMethod::TorchDevice(_) => {
                 unimplemented!("cannot evaluate general networks with torch")
-            },
+            }
         }
         output
     }
@@ -185,7 +185,7 @@ impl<P: FixedPointParameters> Evaluate<FixedPoint<P>>
             EvalMethod::Naive => self.evaluate_naive(input, &mut output),
             EvalMethod::TorchDevice(_) => {
                 unimplemented!("cannot evaluate general networks with torch")
-            },
+            }
         }
         for elem in output.iter_mut() {
             elem.signed_reduce_in_place();
@@ -219,7 +219,7 @@ where
                             .as_ref()
                             .and_then(|cfg| Output::from_tensor(cfg.forward(&input_tensor)))
                             .expect("shape should be correct");
-                    },
+                    }
                     // FullyConnected { dims: _, params: p } => {
                     //     let fc = &p.tch_config;
                     //     let input_tensor = input.to_tensor();
@@ -230,7 +230,7 @@ where
                     // correct"); },
                     _ => self.evaluate_naive(input, &mut output),
                 }
-            },
+            }
         }
         output
     }
@@ -260,7 +260,7 @@ where
                             .as_ref()
                             .and_then(|cfg| Output::from_tensor(cfg.forward(&input_tensor)))
                             .expect("shape should be correct");
-                    },
+                    }
                     // FullyConnected { dims: _, params: p } => {
                     //     let fc = &p.tch_config;
                     //     // Send the input to the appropriate PyTorch device
@@ -270,7 +270,7 @@ where
                     // correct"); },
                     _ => self.evaluate_naive(input, &mut output),
                 }
-            },
+            }
         }
         output
     }
@@ -292,15 +292,36 @@ impl<F, C> LinearLayerInfo<F, C> {
             } => {
                 let params = AvgPoolParams::new(*pool_h, *pool_w, *stride, *normalizer);
                 params.avg_pool_naive(input, output)
-            },
+            }
             LinearLayerInfo::Identity => {
                 *output = input.clone();
                 let one = C::one();
                 for elem in output.iter_mut() {
                     *elem = *elem * one;
                 }
-            },
+            }
             _ => unreachable!(),
+        }
+    }
+}
+
+impl<'a, F, C: Clone> From<&'a LinearLayer<F, C>> for LinearLayerInfo<F, C> {
+    fn from(other: &'a LinearLayer<F, C>) -> Self {
+        match other {
+            LinearLayer::Conv2d { params, .. } => LinearLayerInfo::Conv2d {
+                kernel: params.kernel.dim(),
+                padding: params.padding,
+                stride: params.stride,
+            },
+            LinearLayer::FullyConnected { .. } => LinearLayerInfo::FullyConnected,
+            LinearLayer::AvgPool { params, .. } => LinearLayerInfo::AvgPool {
+                pool_h: params.pool_h,
+                pool_w: params.pool_w,
+                stride: params.stride,
+                normalizer: params.normalizer.clone(),
+                _variable: std::marker::PhantomData,
+            },
+            LinearLayer::Identity { .. } => LinearLayerInfo::Identity,
         }
     }
 }

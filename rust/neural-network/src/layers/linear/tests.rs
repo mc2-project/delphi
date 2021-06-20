@@ -61,7 +61,7 @@ mod convolution {
             output_dims,
         };
         let layer = LinearLayer::Conv2d {
-            dims:   layer_dims,
+            dims: layer_dims,
             params: conv_params,
         };
 

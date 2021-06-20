@@ -23,7 +23,7 @@ pub fn construct_mnist<R: RngCore + CryptoRng>(
 
     let mut network = match &vs {
         Some(vs) => NeuralNetwork {
-            layers:      vec![],
+            layers: vec![],
             eval_method: ::neural_network::EvalMethod::TorchDevice(vs.device()),
         },
         None => NeuralNetwork {

@@ -103,13 +103,12 @@ uv64 pt_rotate(int slot_count, int rotation, vector<u64> &vec) {
 
 /* Generates a masking vector of random noise that will be applied to parts of the ciphertext
  * that contain leakage from the convolution */
-vector<Ciphertext> HE_preprocess_noise(const uint64_t* const* secret_share, const Metadata &data,
-        Encryptor &encryptor, BatchEncoder &batch_encoder) {
+vector<Plaintext> HE_preprocess_noise(const uint64_t* const* secret_share, const Metadata &data,
+        BatchEncoder &batch_encoder) {
     // Create uniform distribution
     random_device rd;
     mt19937 engine(rd());
-    // TODO: Tune this
-    uniform_int_distribution<u64> dist(0, 1<<20);
+    uniform_int_distribution<u64> dist(0, PLAINTEXT_MODULUS);
     auto gen = [&dist, &engine](){
         return dist(engine);
     };
@@ -119,7 +118,7 @@ vector<Ciphertext> HE_preprocess_noise(const uint64_t* const* secret_share, cons
         generate(begin(vec), end(vec), gen);
     }
 
-    // Puncture the vector with 0s where an actual convolution result value lives
+    // Puncture the vector with secret share where an actual convolution result value lives
     for (int out_c = 0; out_c < data.out_chans; out_c++) {
         int ct_idx = out_c / (2*data.chans_per_half);
         int half_idx = (out_c % (2*data.chans_per_half)) / data.chans_per_half;
@@ -137,54 +136,15 @@ vector<Ciphertext> HE_preprocess_noise(const uint64_t* const* secret_share, cons
     }
     
     // Encrypt all the noise vectors
-    vector<Ciphertext> enc_noise(data.out_ct);
+    vector<Plaintext> enc_noise(data.out_ct);
     for (int ct_idx = 0; ct_idx < data.out_ct; ct_idx++) {
-        Plaintext tmp;
-        batch_encoder.encode(noise[ct_idx], tmp);
-        encryptor.encrypt(tmp, enc_noise[ct_idx]);
+        batch_encoder.encode(noise[ct_idx], enc_noise[ct_idx]);
     }
     return enc_noise; 
 }
 
 
-/* Preprocesses the input image for input packing. Ciphertext is packed in RowMajor
- * order. There will be input_channel ciphertexts with each of these
- * having out_chans number of channels in it. Each of these ciphertexts are rotated
- * versions of the first one */
-vector<uv64> preprocess_image_IP(const u64* const* image, Metadata data) {
-    vector<uv64> ct(data.inp_ct, uv64(data.slot_count, 0));
-    for (int inp_c = 0; inp_c < data.inp_chans; inp_c++) {
-        int out_c = 0;
-        for (int ct_idx = 0; ct_idx < data.out_ct; ct_idx++) {
-            int out_c_limit = (ct_idx+1) * 2 * data.chans_per_half;
-            for (; out_c < out_c_limit && out_c < data.out_chans; out_c++) {
-                // Calculate which half of ciphertext the output channel 
-                // falls in and the offest from that half, 
-                int half_idx = (out_c % (2*data.chans_per_half)) / data.chans_per_half;
-                int half_off = out_c % data.chans_per_half;
-                for (int row = 0; row < data.image_h; row++) {
-                    for (int col = 0; col < data.image_w; col++) {
-                        int idx = half_idx * data.pack_num
-                                + half_off * data.image_size
-                                + row * data.image_h
-                                + col;
-                        // We add inp_c and out_c together here since there are
-                        // inp_chans rotations
-                        ct[inp_c*data.out_ct+ct_idx][idx] =
-                            image[(inp_c+out_c)%data.inp_chans][row*data.image_h + col];
-                    }
-                }
-            }
-        }
-    }
-    return ct;
-}
-
-
-/* Preprocesses the input image for output packing. Ciphertext is packed in RowMajor
- * order. In this mode simply pack all the input channels as tightly as possible
- * where each channel is padded to the nearest of two */
-vector<uv64> preprocess_image_OP(const u64* const* image, Metadata data) {
+vector<uv64> preprocess_image(Metadata data, const u64* const* image) {
     vector<uv64> ct(data.inp_ct, uv64(data.slot_count, 0));
     int inp_c = 0;
     for (int ct_idx = 0; ct_idx < data.inp_ct; ct_idx++) {
@@ -215,7 +175,6 @@ vector<uv64> preprocess_image_OP(const u64* const* image, Metadata data) {
  * multiply with which elements of the image. We account for the zero padding by
  * zero-puncturing the masks. This function can evaluate plaintexts and
  * ciphertexts.
- *
 */
 template <class T>
 vector<T> filter_rotations(T &input, const Metadata &data, Evaluator *evaluator, GaloisKeys *gal_keys) {
@@ -229,7 +188,7 @@ vector<T> filter_rotations(T &input, const Metadata &data, Evaluator *evaluator,
     // This offset calculates rotations needed to bring filter from top left
     // corner of image to the top left corner of padded image
     int offset = f_per_row * data.pad_t + data.pad_l;
-
+    
     // For each element of the filter, rotate the padded image s.t. the top
     // left position always contains the first element of the image it touches
     for (int f_row = 0; f_row < data.filter_h; f_row++) {
@@ -287,62 +246,6 @@ vector<Ciphertext> HE_encrypt(vector<uv64> &pt, const Metadata &data,
 }
 
 
-/* Creates masks for an image that has been input packed. Essentially, the function
- * simulates dragging the filter across the image. For each value in the filter,
- * there will be a corresponding mask. An index in a given mask will be 0 if that
- * filter value never touches the image at that point, or the filter value itself is 0 */
-vector<vector<Plaintext>> HE_preprocess_filters_IP(const u64* const* const* filters,
-        const Metadata &data, BatchEncoder &batch_encoder) {
-    // Mask is cts per input rotation x mask size
-    vector<vector<uv64>> masks(data.inp_ct,
-            vector<uv64>(data.filter_size, uv64(data.slot_count, 0)));
-    for (int inp_c = 0; inp_c < data.inp_chans; inp_c++) {
-        int out_c = 0;
-        for (int ct_idx = 0; ct_idx < data.out_ct; ct_idx++) {
-            int out_c_limit = (ct_idx+1) * 2 * data.chans_per_half;
-            for (; out_c < out_c_limit && out_c < data.out_chans; out_c++) {
-                for (int f = 0; f < data.filter_size; f++) {
-                    int f_w = f % data.filter_w;
-                    int f_h = f / data.filter_w;
-                    // We choose the value based on which input rotation we're on
-                    int val = filters[out_c][(inp_c+out_c)%data.inp_chans][f];
-                    // Iterate through the whole image and figure out which
-                    // values the filter value touches. 
-                    for(int curr_h = 0; curr_h < data.image_h; curr_h += data.stride_h) {
-                        for(int curr_w = 0; curr_w < data.image_w; curr_w += data.stride_w) {
-                            // curr_h and curr_w simulate the current top-left position of 
-                            // the filter. This detects whether the filter would fit over
-                            // this section. If it's out-of-bounds we set the mask index to 0
-                            bool zero = ((curr_w+f_w) < data.pad_l) ||
-                                ((curr_w+f_w) >= (data.image_w+data.pad_l)) ||
-                                ((curr_h+f_h) < data.pad_t) ||
-                                ((curr_h+f_h) >= (data.image_h+data.pad_t));
-                            // Calculate which half of ciphertext channel falls in
-                            // and the offest from that half, 
-                            int half_idx = (out_c % (2*data.chans_per_half)) / data.chans_per_half;
-                            int half_off = out_c % data.chans_per_half;
-                            int idx = half_idx * data.pack_num
-                                    + half_off * data.image_size
-                                    + curr_h * data.image_h
-                                    + curr_w;
-                            masks[inp_c*data.out_ct+ct_idx][f][idx] = zero? 0: val;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // Encode all the masks
-    vector<vector<Plaintext>> encoded_masks(data.inp_ct, vector<Plaintext>(data.filter_size));
-    for (int ct = 0; ct < data.inp_ct; ct++) {
-        for (int f = 0; f < data.filter_size; f++) {
-            batch_encoder.encode(masks[ct][f], encoded_masks[ct][f]);
-        } 
-    }
-    return encoded_masks;
-}
-
-
 /* Creates filter masks for an image input that has been output packed.
  *
  * The actual values of the masks are set in the exact same manner as input
@@ -376,7 +279,7 @@ vector<vector<Plaintext>> HE_preprocess_filters_IP(const u64* const* const* filt
  * half where inp_chans % chans_per_half != 0. This enables a further
  * optimization for the repeating half.
  */
-vector<vector<vector<Plaintext>>> HE_preprocess_filters_OP(const u64* const* const* filters,
+vector<vector<vector<Plaintext>>> HE_preprocess_filters(const u64* const* const* filters,
         const Metadata &data, BatchEncoder &batch_encoder) {
     // Mask is convolutions x cts per convolution x mask size
     vector<vector<vector<uv64>>> masks(
@@ -499,48 +402,7 @@ vector<vector<vector<Plaintext>>> HE_preprocess_filters_OP(const u64* const* con
     return encoded_masks;
 }
 
-/* Performs convolution for an input packed image. Returns the final output
- * along with some leakage if the padding method is VALID */
-vector<Ciphertext> HE_conv_IP(vector<vector<Plaintext>> &masks,
-        vector<vector<Ciphertext>> &rotations, const Metadata &data, Evaluator &evaluator,
-        RelinKeys &relin_keys, Ciphertext &zero, vector<Ciphertext> &enc_noise) {
-    vector<Ciphertext> result(data.out_ct);
-    // Init the result vector to all 0
-    for (int ct_idx = 0; ct_idx < data.out_ct; ct_idx++) {
-        result[ct_idx] = zero;
-    }
-
-    // Multiply each rotation with appropiate mask, and add all the results
-    // together
-    for (int inp_c = 0; inp_c < data.inp_chans; inp_c++) {
-        for (int ct_idx = 0; ct_idx < data.out_ct; ct_idx++) {
-            for (int f = 0; f < data.filter_size; f++) {
-                int base_idx = inp_c * data.out_ct + ct_idx;
-                // Note that if a mask is zero this will result in a
-                // 'transparent' ciphertext which SEAL won't allow by default.
-                // This isn't a problem however since we're adding the result
-                // with something else, and the size is known beforehand so
-                // having some elements be 0 doesn't matter
-                evaluator.multiply_plain_inplace(rotations[base_idx][f],
-                        masks[base_idx][f]);
-                evaluator.relinearize_inplace(rotations[base_idx][f], relin_keys);
-                multiplications += 1;
-                evaluator.add_inplace(result[ct_idx], rotations[base_idx][f]);
-                additions += 1;
-            }
-        }
-    }
-    // Add the noise vector to remove any leakage
-    for (int ct_idx = 0; ct_idx < data.out_ct; ct_idx++) {
-        evaluator.add_inplace(result[ct_idx], enc_noise[ct_idx]);
-        additions += 1;
-    }
-    return result;
-}
-
-/* Performs convolution for an output packed image. Returns the intermediate
- * rotation sets */
-vector<vector<Ciphertext>> HE_conv_OP(vector<vector<vector<Plaintext>>> &masks,
+vector<vector<Ciphertext>> HE_conv(vector<vector<vector<Plaintext>>> &masks,
         vector<vector<Ciphertext>> &rotations, const Metadata &data, Evaluator &evaluator,
         RelinKeys &relin_keys, Ciphertext &zero) {
     vector<vector<Ciphertext>> result(data.convs, vector<Ciphertext>(data.inp_ct));
@@ -601,7 +463,7 @@ vector<vector<Ciphertext>> HE_conv_OP(vector<vector<vector<Plaintext>>> &masks,
  * */
 vector<Ciphertext> HE_output_rotations(vector<vector<Ciphertext>> convs,
         const Metadata &data, Evaluator &evaluator, GaloisKeys &gal_keys,
-        Ciphertext &zero, vector<Ciphertext> &enc_noise) {
+        Ciphertext &zero) {
     vector<vector<Ciphertext>> partials(data.half_perms,
                                         vector<Ciphertext>(data.inp_ct));
     // Init the result vector to all 0
@@ -759,11 +621,6 @@ vector<Ciphertext> HE_output_rotations(vector<vector<Ciphertext>> convs,
             }
         }
     }
-    //// Add the noise vector to remove any leakage
-    for (int ct_idx = 0; ct_idx < data.out_ct; ct_idx++) {
-        evaluator.add_inplace(result[ct_idx], enc_noise[ct_idx]);
-        additions += 1;
-    }
     return result;
 }
 
@@ -805,10 +662,9 @@ u64** HE_decrypt(vector<Ciphertext> &enc_result, const Metadata &data, Decryptor
 
 /* Populates the Metadata struct */
 Metadata conv_metadata(int slot_count, int image_h, int image_w, int filter_h, int filter_w,
-        int inp_chans, int out_chans, int stride_h, int stride_w, bool pad_valid, Mode mode) {
+        int inp_chans, int out_chans, int stride_h, int stride_w, bool pad_valid) {
     // If using Output packing we pad image_size to the nearest power of 2
-    int image_size = (mode == Mode::Output) ?
-        next_pow2(image_h*image_w) : image_h*image_w;
+    int image_size = next_pow2(image_h*image_w);
     int filter_size = filter_h * filter_w;
 
     int pack_num = slot_count / 2;
@@ -817,8 +673,7 @@ Metadata conv_metadata(int slot_count, int image_h, int image_w, int filter_h, i
     // In input packing we create inp_chans number of ciphertexts that are the
     // size of the output. In output packing we simply send the input
     // ciphertext
-    int inp_ct = (mode == Mode::Output) ?
-        ceil((float) inp_chans / (2*chans_per_half)) : inp_chans * out_ct;
+    int inp_ct = ceil((float) inp_chans / (2*chans_per_half));
 
 
     int inp_halves = ceil((float) inp_chans / chans_per_half);
@@ -864,7 +719,7 @@ Metadata conv_metadata(int slot_count, int image_h, int image_w, int filter_h, i
     // (ie. less rotations for a convolution) but we still do the half_rots #
     // of rotations than we simply skip the convolution for the last half
     // appropiately
-    int convs = (mode == Mode::Output && out_halves == 1) ? last_rots : half_perms * half_rots;
+    int convs = (out_halves == 1) ? last_rots : half_perms * half_rots;
 
     // Calculate padding
     int output_h, output_w, pad_t, pad_b, pad_r, pad_l;
@@ -894,158 +749,6 @@ Metadata conv_metadata(int slot_count, int image_h, int image_w, int filter_h, i
         out_mod, half_perms, last_repeats, repeat_chans, half_rots, last_rots,
         convs, stride_h, stride_w, output_h, output_w, pad_t, pad_b, pad_r, pad_l};
     return data;
-}
-
-/* This mimics a full run-through of the total protocol and is called for
- * unittesting */
-Image HE_packed(Image image, Filters filters, int image_h, int image_w, int filter_h,
-        int filter_w, int inp_chans, int out_chans, bool pad_valid, int stride_h,
-        int stride_w, Mode mode) {
-
-    chrono::high_resolution_clock::time_point time_start, time_end;
-    // Reset counters
-    ciphertexts = 0;
-    result_ciphertexts = 0;
-    rot_count = 0;
-    multiplications = 0;
-    additions = 0;
-
-    cout << "Param and key gen";
-    time_start = chrono::high_resolution_clock::now();
-
-    //---------------Param and Key Generation---------------
-    EncryptionParameters parms(scheme_type::BFV);
-    parms.set_poly_modulus_degree(POLY_MOD_DEGREE);
-    parms.set_coeff_modulus(CoeffModulus::BFVDefault(POLY_MOD_DEGREE));
-    parms.set_plain_modulus(PLAINTEXT_MODULUS);
-    auto context = SEALContext::Create(parms);
-    KeyGenerator keygen(context);
-    auto public_key = keygen.public_key();
-    auto secret_key = keygen.secret_key();
-    // Parameters are large enough that we should be fine with these at max
-    // decomposition
-    auto relin_keys = keygen.relin_keys();
-    auto gal_keys = keygen.galois_keys();
-
-    Encryptor encryptor(context, public_key);
-    Evaluator evaluator(context);
-    Decryptor decryptor(context, secret_key); 
-    BatchEncoder batch_encoder(context);
-
-    int slot_count = batch_encoder.slot_count();
-    // Generate the zero ciphertext
-    vector<u64> pod_matrix(slot_count, 0ULL);
-    Plaintext tmp;
-    Ciphertext zero;
-    batch_encoder.encode(pod_matrix, tmp);
-    encryptor.encrypt(tmp, zero);
-    //-------------------------------------------
-
-    time_end = chrono::high_resolution_clock::now();
-    auto time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << " [" << time_diff.count() << " microseconds]\n";
-
-    Metadata data = conv_metadata(slot_count, image_h, image_w, filter_h, filter_w, inp_chans, 
-            out_chans, stride_h, stride_w, pad_valid, mode);
-
-    cout << "Preprocessing";
-    time_start = chrono::high_resolution_clock::now();
-
-    //---------------Preprocessing---------------
-    vector<vector<Ciphertext>> rotations;
-    vector<Ciphertext> ct;
-    vector<vector<Plaintext>> masks_IP;
-    vector<vector<vector<Plaintext>>> masks_OP;
-
-    u64** secret_share = new u64*[sizeof(u64) * data.out_chans];
-    for (int chan = 0; chan < data.out_chans; chan++) {
-        secret_share[chan] = new u64[sizeof(u64)*data.output_h*data.output_w];
-        for (int idx = 0; idx < data.output_h*data.output_w; idx++)
-            secret_share[chan][idx] = 100;
-    }
-
-    vector<Ciphertext> enc_noise = HE_preprocess_noise(secret_share, data, encryptor, batch_encoder);
-    if (mode == Mode::InputConv) {
-        // Client preprocessing
-        auto pt = preprocess_image_IP(image, data);
-        auto rotated_pt = filter_rotations(pt, data);
-        rotations = HE_encrypt_rotations(rotated_pt, data, encryptor, batch_encoder);
-        // Server preprocessing
-        masks_IP = HE_preprocess_filters_IP(filters, data, batch_encoder);
-        ciphertexts += rotations.size() * rotations[0].size();
-    } else if (mode == Mode::Input) {
-        // Client preprocessing
-        auto pt = preprocess_image_IP(image, data);
-        ct = HE_encrypt(pt, data, encryptor, batch_encoder);
-        // Server preprocessing
-        masks_IP = HE_preprocess_filters_IP(filters, data, batch_encoder);
-        ciphertexts += ct.size();
-    } else if (mode == Mode::Output) {
-        // Client preprocessing
-        auto pt = preprocess_image_OP(image, data);
-        auto rotated_pt = filter_rotations(pt, data);
-        rotations = HE_encrypt_rotations(rotated_pt, data, encryptor, batch_encoder);
-        // Server preprocessing
-        masks_OP = HE_preprocess_filters_OP(filters, data, batch_encoder);
-        ciphertexts += rotations.size() * rotations[0].size();
-    }
-    //-------------------------------------------
-
-    time_end = chrono::high_resolution_clock::now();
-    time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << " [" << time_diff.count() << " microseconds]" << endl;
-
-    time_start = chrono::high_resolution_clock::now();
-
-    //--------------Convolution------------------
-    vector<Ciphertext> result;
-    if (mode == Mode::InputConv) {
-        result = HE_conv_IP(masks_IP, rotations, data, evaluator, relin_keys, zero, enc_noise);
-    } else if (mode == Mode::Input) {
-        // Server has to evaluate all the input rotations in this mode
-        rotations = filter_rotations(ct, data, &evaluator, &gal_keys);
-        result = HE_conv_IP(masks_IP, rotations, data, evaluator, relin_keys, zero, enc_noise);
-    } else if (mode == Mode::Output) {
-        auto conv_result = HE_conv_OP(masks_OP, rotations, data, evaluator, relin_keys, zero);
-        
-        cout << "Output Rotations: ";
-        auto time_start2 = chrono::high_resolution_clock::now();
-
-        result = HE_output_rotations(conv_result, data, evaluator, gal_keys, zero, enc_noise); 
-
-        time_end = chrono::high_resolution_clock::now();
-        time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start2);
-        cout << " [" << time_diff.count() << " microseconds]" << endl;
-         
-    }
-    result_ciphertexts += result.size();
-    //-------------------------------------------
-
-    cout << "Convolution: ";
-    time_end = chrono::high_resolution_clock::now();
-    time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << " [" << time_diff.count() << " microseconds]" << endl;
-
-    cout << "Postprocessing: ";
-    time_start = chrono::high_resolution_clock::now();
-
-    auto final_result = HE_decrypt(result, data, decryptor, batch_encoder);
-
-    for (int chan = 0; chan < data.out_chans; chan++) {
-        for (int idx = 0; idx < data.output_h*data.output_w; idx++)
-            final_result[chan][idx] -= secret_share[chan][idx];
-    }
-
-    time_end = chrono::high_resolution_clock::now();
-    time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << " [" << time_diff.count() << " microseconds]" << endl;
-
-    cout << "Additions: " << additions << endl;
-    cout << "Rotations: " << rot_count << endl;
-    cout << "Multiplications: " << multiplications << endl;
-    cout << "Ciphertexts: " << ciphertexts << endl;
-    cout << "Result ciphertexts: " << result_ciphertexts << endl;
-    return final_result;
 }
 
 // These are so linking doesn't fail

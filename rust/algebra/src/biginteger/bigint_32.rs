@@ -137,7 +137,7 @@ impl FromBytes for BigInteger32 {
 }
 
 pub struct IntoIter32 {
-    int:      BigInteger32,
+    int: BigInteger32,
     iterated: bool,
 }
 
@@ -166,7 +166,7 @@ impl IntoIterator for BigInteger32 {
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         Self::IntoIter {
-            int:      self,
+            int: self,
             iterated: false,
         }
     }

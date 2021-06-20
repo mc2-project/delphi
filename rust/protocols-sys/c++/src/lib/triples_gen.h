@@ -9,23 +9,21 @@
 
 #include "seal/seal.h"
 #include "interface.h"
-#include <boost/multiprecision/cpp_int.hpp>
 
 using namespace seal;
 using namespace std;
 
 typedef uint64_t u64;
-typedef boost::multiprecision::uint128_t u128;
 typedef vector<u64> uv64;
 
-vector<Ciphertext> encrypt_shares(const u64* share, int num_triples, Encryptor& encryptor, BatchEncoder& batch_encoder);
+/* Computes encrypted share of c ie. Enc(a1b1 + a1b2 + b1a2 + a2b2). Stores the result in c_ct.
+ * Note that operations on a_ct and b_ct are done in-place for efficiency */
+void triples_online(vector<Ciphertext> &a_ct, vector<Ciphertext> &b_ct, vector<Ciphertext> &c_ct,
+        vector<Plaintext> &a_share, vector<Plaintext> &b_share, vector<Plaintext> &c_share,
+        Evaluator& evaluator, RelinKeys& relin_keys);
 
-void server_compute_share(vector<Ciphertext> &a_ct, vector<Ciphertext> &b_ct,
-        const u64* a_share, const u64* b_share, const u64* r_share, int num_triples,
-        Evaluator& evaluator, BatchEncoder& batch_encoder, RelinKeys& relin_keys);
-        
-u64* client_share_postprocess(const u64* a_share, const u64* b_share,
-        vector<Ciphertext> &client_share_ct, int num_triples, Evaluator& evaluator,
-        BatchEncoder& batch_encoder, Decryptor& decryptor);
+/* Decrypts a ciphertext of triples shares */
+u64* client_triples_postprocess(uint32_t num_triples, vector<Ciphertext> &ct, BatchEncoder &encoder,
+    Decryptor& decryptor);
 
 #endif

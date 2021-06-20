@@ -60,14 +60,14 @@ where
 }
 
 pub struct ServerState<P: FixedPointParameters> {
-    pub encoders:           Vec<Encoder>,
+    pub encoders: Vec<Encoder>,
     pub output_randomizers: Vec<P::Field>,
 }
 
 pub struct ClientState {
-    pub gc_s:                     Vec<GarbledCircuit>,
+    pub gc_s: Vec<GarbledCircuit>,
     pub server_randomizer_labels: Vec<Wire>,
-    pub client_input_labels:      Vec<Wire>,
+    pub client_input_labels: Vec<Wire>,
 }
 
 impl<P: FixedPointParameters> ReluProtocol<P>
