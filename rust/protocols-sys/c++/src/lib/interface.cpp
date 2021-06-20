@@ -4,179 +4,253 @@
  *  Created on: June 10, 2019
  *      Author: ryanleh
  */
+#include <iomanip>
+#include <math.h>
 #include "interface.h"
 #include "conv2d.h"
 #include "fc_layer.h"
 #include "triples_gen.h"
 
-/* Generates new keys and helpers for Client. Returns the helpers and allocates
- * a bytestream for sharing the keys with the server */
-ClientFHE client_keygen(char** key_share, uint64_t* key_share_len) {
-    //---------------Param and Key Generation---------------
-    EncryptionParameters parms(scheme_type::BFV);
-    parms.set_poly_modulus_degree(POLY_MOD_DEGREE);
-    parms.set_coeff_modulus(CoeffModulus::BFVDefault(POLY_MOD_DEGREE));
-    parms.set_plain_modulus(PLAINTEXT_MODULUS);
-    auto context = SEALContext::Create(parms);
-    KeyGenerator keygen(context);
-    auto pub_key = keygen.public_key();
-    auto sec_key = keygen.secret_key();
-    // Parameters are large enough that we should be fine with these at max
-    // decomposition
-    auto gal_keys = keygen.galois_keys();
-    auto relin_keys = keygen.relin_keys();
+/* Formatted printed for batched plaintext */
+inline void print_batch(size_t slot_count, size_t print_size, uv64 &plain) {
+    size_t row_size = slot_count / 2;
+    cout << endl;
 
-    BatchEncoder *encoder = new BatchEncoder(context);
-    Encryptor *encryptor = new Encryptor(context, pub_key);
-    Evaluator *evaluator = new Evaluator(context);
-    Decryptor *decryptor = new Decryptor(context, sec_key); 
-   
-    // Create a byte array consisting of the three serialized keys and their
-    // sizes
-    ostringstream os;
-    // Public Key
-    pub_key.save(os);
-    uint64_t pk_size = os.tellp();
-    // Galois Keys
-    gal_keys.save(os);
-    uint64_t gk_size = (uint64_t)os.tellp()-pk_size;
-    // Relin keys
-    relin_keys.save(os);
-    uint64_t rk_size = (uint64_t)os.tellp()-pk_size-gk_size;
-
-    string keys_ser = os.str();
-    *key_share_len = sizeof(uint64_t)*3+pk_size+gk_size+rk_size;
-    *key_share = new char[*key_share_len];
-    // std::copy does weird stuff with typing for POD so have to use memcpy here
-    // Copy the size of each key followed by the key itself
-    memcpy(*key_share, &pk_size, sizeof(uint64_t));
-    memcpy(*key_share+sizeof(uint64_t), &gk_size, sizeof(uint64_t));
-    memcpy(*key_share+sizeof(uint64_t)*2, &rk_size, sizeof(uint64_t));
-    std::move(keys_ser.begin(), keys_ser.end(), *key_share+sizeof(uint64_t)*3);
-
-    return ClientFHE { encoder, encryptor, evaluator, decryptor };
+    cout << "    [";
+    for (size_t i = 0; i < print_size; i++)
+    {
+        cout << setw(3) << plain[i] << ",";
+    }
+    cout << setw(3) << " ...,";
+    for (size_t i = row_size - print_size; i < row_size; i++)
+    {
+        cout << setw(3) << plain[i] << ((i != row_size - 1) ? "," : " ]\n");
+    }
+    cout << "    [";
+    for (size_t i = row_size; i < row_size + print_size; i++)
+    {
+        cout << setw(3) << plain[i] << ",";
+    }
+    cout << setw(3) << " ...,";
+    for (size_t i = 2 * row_size - print_size; i < 2 * row_size; i++)
+    {
+        cout << setw(3) << plain[i] << ((i != 2 * row_size - 1) ? "," : " ]\n");
+    }
+    cout << endl;
 }
 
-/* Generates keys and helpers for Server given a key_share */
-ServerFHE server_keygen(char* key_share) {
-    //---------------Param Generation---------------
-    EncryptionParameters parms(scheme_type::BFV);
+/* Serializes an outputstream into a byte array.
+ * Returns the bytearray and size */
+SerialCT serialize(ostringstream &os) {
+    char* serialized = new char[os.tellp()];
+    string tmp_str = os.str();
+    std::move(tmp_str.begin(), tmp_str.end(), serialized);
+    return SerialCT { serialized, (uint64_t) os.tellp() };
+}
 
+/* Serializes a SEAL ciphertext to a byte array. 
+ * returns the bytearray and size */
+SerialCT serialize_ct(vector<Ciphertext> ct_vec) {
+    ostringstream os;
+    for (auto &ct: ct_vec)
+        ct.save(os);
+    return serialize(os);
+}
+
+/* Extracts a vector of Ciphertexts from provided byte stream */
+void recast_opaque(SerialCT &ct, vector<Ciphertext>& destination,
+        SEALContext* context) {
+    istringstream is;
+    is.rdbuf()->pubsetbuf(ct.inner, ct.size);
+    for(int ct_idx = 0; ct_idx < destination.size(); ct_idx++) {
+        destination[ct_idx].load(*context, is);
+    }
+}
+
+/* Encodes a vector of u64 into SEAL Plaintext */
+vector<Plaintext> encode_vec(const u64* shares, u64 num, BatchEncoder& encoder) {
+    u64 slot_count = encoder.slot_count();
+    int vec_size = ceil((float)num / slot_count);
+    vector<Plaintext> result(vec_size);
+
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+    for (int vec_idx = 0; vec_idx < vec_size; vec_idx++) {
+        uv64 pod_matrix(slot_count, 0ULL);
+        int limit = min(num-vec_idx*slot_count, slot_count);
+        for (int i = 0; i < limit; i++) {
+            pod_matrix[i] = shares[vec_idx*slot_count + i];
+        }
+        encoder.encode(pod_matrix, result[vec_idx]);
+    }
+    return result;
+}
+
+/* Encrypts and serializes a vector */
+SerialCT encrypt_vec(const ClientFHE* cfhe, const u64* vec, u64 vec_size) {
+    // Recast the needed fhe helpers
+    Encryptor *encryptor = reinterpret_cast<Encryptor*>(cfhe->encryptor);
+    BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
+   
+    // Encrypt vec
+    auto pt_vec = encode_vec(vec, vec_size, *encoder);
+    vector<Ciphertext> ct_vec(pt_vec.size());
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+    for (int i = 0; i < pt_vec.size(); i++) {
+        encryptor->encrypt(pt_vec[i], ct_vec[i]);
+    }
+
+    // Serialize ciphertexts
+    SerialCT ct = serialize_ct(ct_vec);
+    return ct;
+}
+
+/* Deserializes and decrypts a vector */
+u64* decrypt_vec(const ClientFHE* cfhe, SerialCT *ct, u64 size) {
+    // Grab shared pointer to SEALContext
+    auto context = static_cast<SEALContext*>(cfhe->context);
+
+    // Recast needed fhe helpers
+    Decryptor *decryptor = reinterpret_cast<Decryptor*>(cfhe->decryptor);
+    BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
+
+    // Recast bytearrays to vectors of Ciphertexts and decrypt
+    u64 slot_count = encoder->slot_count();
+    u64 vec_size = ceil((float)size / slot_count);
+    vector<Ciphertext> ct_vec(vec_size);
+    recast_opaque(*ct, ct_vec, context);
+    
+    // Decrypt ciphertext 
+    u64* share = new u64[size];
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+    for (int i = 0; i < vec_size; i++) {
+        vector<u64> pod_matrix(slot_count, 0ULL);
+        Plaintext tmp;
+        decryptor->decrypt(ct_vec[i], tmp);
+        encoder->decode(tmp, pod_matrix);
+        for (int j = 0; j < min(slot_count, size - slot_count*i); j++) {
+            share[slot_count*i + j] = pod_matrix[j];
+        }
+    }
+    return share;
+}
+
+ClientFHE client_keygen(SerialCT *key_share) {
+    //---------------Param and Key Generation---------------
+    EncryptionParameters parms(scheme_type::bfv);
     parms.set_poly_modulus_degree(POLY_MOD_DEGREE);
     parms.set_coeff_modulus(CoeffModulus::BFVDefault(POLY_MOD_DEGREE));
     parms.set_plain_modulus(PLAINTEXT_MODULUS);
-    auto context = SEALContext::Create(parms);
-
-    // Extract the size of each key and then put the key into an inputstream so
-    // that it can be loaded into the correct object
-    istringstream is;
-
-    uint64_t pk_size;
-    uint64_t gk_size;
-    uint64_t rk_size;
-    memcpy(&pk_size, key_share, sizeof(uint64_t));
-    memcpy(&gk_size, key_share+sizeof(uint64_t), sizeof(uint64_t));
-    memcpy(&rk_size, key_share+sizeof(uint64_t)*2, sizeof(uint64_t));
-
-    // Public Key
+    auto context = new SEALContext(parms);
+    KeyGenerator keygen(*context);
+    auto sec_key = keygen.secret_key();
+    // Get serialized versions of the keys
+    auto ser_pub_key = keygen.create_public_key();
+    auto ser_gal_keys = keygen.create_galois_keys();
+    auto ser_relin_keys = keygen.create_relin_keys();
+    // Deserialize the public key since we use it when creating the local
+    // objects
     PublicKey pub_key;
-    is.rdbuf()->pubsetbuf(key_share+sizeof(uint64_t)*3, pk_size);
-    pub_key.load(context, is);
-    // Galois Keys 
+    stringstream pub_key_s;
+    ser_pub_key.save(pub_key_s);
+    pub_key.load(*context, pub_key_s);
+
+    BatchEncoder *encoder = new BatchEncoder(*context);
+    Encryptor *encryptor = new Encryptor(*context, pub_key);
+    Evaluator *evaluator = new Evaluator(*context);
+    Decryptor *decryptor = new Decryptor(*context, sec_key); 
+
+    // Recast the context to void*
+    void* void_context = static_cast<void*>(context);
+
+    // Serialize params and all keys
+    ostringstream os;
+    parms.save(os);
+    ser_pub_key.save(os);
+    ser_gal_keys.save(os);
+    ser_relin_keys.save(os);
+    *key_share = serialize(os);
+    return ClientFHE { void_context, encoder, encryptor, evaluator, decryptor };
+}
+
+
+ServerFHE server_keygen(SerialCT key_share) {
+    istringstream is;
+    is.rdbuf()->pubsetbuf(key_share.inner, key_share.size);
+
+    // Load params
+    EncryptionParameters parms;
+    parms.load(is);
+    auto context = new SEALContext(parms);
+
+    // Load keys
+    PublicKey pub_key;
     GaloisKeys* gal_keys = new GaloisKeys();
-    is.rdbuf()->pubsetbuf(key_share+sizeof(uint64_t)*3+pk_size, gk_size);
-    (*gal_keys).load(context, is);
-    // Relin Keys
     RelinKeys* relin_keys = new RelinKeys();
-    is.rdbuf()->pubsetbuf(key_share+sizeof(uint64_t)*3+pk_size+gk_size, rk_size);
-    (*relin_keys).load(context, is);
+    pub_key.load(*context, is);
+    (*gal_keys).load(*context, is);
+    (*relin_keys).load(*context, is);
+
+    // Create helpers
+    BatchEncoder *encoder = new BatchEncoder(*context);
+    Encryptor *encryptor = new Encryptor(*context, pub_key);
+    Evaluator *evaluator = new Evaluator(*context);
     
-    BatchEncoder *encoder = new BatchEncoder(context);
-    Encryptor *encryptor = new Encryptor(context, pub_key);
-    Evaluator *evaluator = new Evaluator(context);
+    // Recast the context to void*
+    void* void_context = static_cast<void*>(context);
     
     // Generate the zero ciphertext
-    vector<uint64_t> pod_matrix(encoder->slot_count(), 0ULL);
+    vector<u64> pod_matrix(encoder->slot_count(), 0ULL);
     Plaintext tmp;
     Ciphertext* zero = new Ciphertext();
     encoder->encode(pod_matrix, tmp);
     encryptor->encrypt(tmp, *zero);
 
-    return ServerFHE { encoder, encryptor, evaluator, gal_keys, relin_keys, (char*) zero };
+    return ServerFHE { void_context, encoder, encryptor, evaluator, gal_keys, relin_keys,
+      (char*) zero };
 }
 
-/* Populates the Metadata struct */
 Metadata conv_metadata(void* batch_encoder, int32_t image_h, int32_t image_w, int32_t filter_h, int32_t filter_w,
-        int32_t inp_chans, int32_t out_chans, int32_t stride_h, int32_t stride_w, bool pad_valid, Mode mode) {
+        int32_t inp_chans, int32_t out_chans, int32_t stride_h, int32_t stride_w, bool pad_valid) {
     int slot_count = (reinterpret_cast<BatchEncoder*>(batch_encoder))->slot_count();
     return conv_metadata(slot_count, image_h, image_w, filter_h, filter_w, inp_chans, out_chans,
-        stride_h, stride_w, pad_valid, mode);
+        stride_h, stride_w, pad_valid);
 }
 
-/* Populates the Metadata struct for FC layer */
 Metadata fc_metadata(void* batch_encoder, int32_t vector_len, int32_t matrix_h) {
     int slot_count = (reinterpret_cast<BatchEncoder*>(batch_encoder))->slot_count();
     return fc_metadata(slot_count, vector_len, matrix_h);
 }
 
-/* Allocates correct serialized objects for each provided point32_ter */
-char* client_conv_preprocess(const uint64_t* const* image, const ClientFHE* cfhe, const Metadata* data, Mode mode, uint64_t* enc_size) {
+ClientShares client_conv_preprocess(const ClientFHE* cfhe, const Metadata* data, const u64* const* image) {
     // Recast the needed fhe helpers
     Encryptor *encryptor = reinterpret_cast<Encryptor*>(cfhe->encryptor);
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
     
-    // Populate the image ciphertext based on the mode being used
-    vector<vector<Ciphertext>> ct_vec;
-    if (mode == Mode::InputConv) {
-        auto pt = preprocess_image_IP(image, *data);
-        auto rotated_pt = filter_rotations(pt, *data);
-        ct_vec = HE_encrypt_rotations(rotated_pt, *data, *encryptor, *encoder);
-    } else if (mode == Mode::Input) {
-        auto pt = preprocess_image_IP(image, *data);
-        ct_vec.resize(1);
-        ct_vec[0] = HE_encrypt(pt, *data, *encryptor, *encoder);
-    } else if (mode == Mode::Output) {
-        auto pt = preprocess_image_OP(image, *data);
-        auto rotated_pt = filter_rotations(pt, *data);
-        ct_vec = HE_encrypt_rotations(rotated_pt, *data, *encryptor, *encoder);
-    }
+    // Preprocess image
+    auto pt = preprocess_image(*data, image);
+    auto rotated_pt = filter_rotations(pt, *data);
+    auto ct_rotations = HE_encrypt_rotations(rotated_pt, *data, *encryptor, *encoder);
 
-    // Convert vector to char array and flatten to a single byte array
-    ostringstream os;
-    uint64_t ct_size = 0;
-    for (int ct_idx = 0; ct_idx < ct_vec.size(); ct_idx++) {
-        for(int rot = 0; rot < ct_vec[0].size(); rot++) {
-            ct_vec[ct_idx][rot].save(os);
-            if (!ct_idx && !rot)
-                ct_size = os.tellp();
-        }
-    }
-    string ct_ser = os.str();
-    char* ciphertext = new char[sizeof(uint64_t) + ct_ser.size()];
-    *enc_size = sizeof(uint64_t) + ct_ser.size();
-    memcpy(ciphertext, &ct_size, sizeof(uint64_t));
-    std::move(ct_ser.begin(), ct_ser.end(), ciphertext+sizeof(uint64_t));
-    return ciphertext;
+    // Flatten rotations ciphertext
+    vector<Ciphertext> ct_flat_rotations;
+    for (const auto &ct: ct_rotations)
+        ct_flat_rotations.insert(ct_flat_rotations.end(), ct.begin(), ct.end());
+
+    // Serialize vector
+    ClientShares shares;
+    shares.input_ct = serialize_ct(ct_flat_rotations);
+    return shares;
 }
 
-/* Generates necessary filters and stores in tensor */
-char**** server_conv_preprocess(const uint64_t* const* const* filters, const ServerFHE* sfhe,
-        const Metadata* data, Mode mode) {
+char**** server_conv_preprocess(const ServerFHE* sfhe, const Metadata* data,
+        const u64* const* const* filters) {
     // Recast the needed fhe helpers
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(sfhe->encoder);
 
-    // Create the filters
-    vector<vector<vector<Plaintext>>> masks_vec;
-    if (mode == Mode::InputConv) {
-        masks_vec.resize(1);
-        masks_vec[0] = HE_preprocess_filters_IP(filters, *data, *encoder);
-    } else if (mode == Mode::Input) {
-        masks_vec.resize(1);
-        masks_vec[0] = HE_preprocess_filters_IP(filters, *data, *encoder);
-    } else if (mode == Mode::Output) {
-        masks_vec = HE_preprocess_filters_OP(filters, *data, *encoder);
-    }
-    
+    // Preprocess filters
+    auto masks_vec = HE_preprocess_filters(filters, *data, *encoder);
+   
+    // Recast masks to use opaque pointers for C interface
     char**** masks = new char***[masks_vec.size()];
     for (int i = 0; i < masks_vec.size(); i++) {
         masks[i] = new char**[masks_vec[0].size()];
@@ -186,37 +260,52 @@ char**** server_conv_preprocess(const uint64_t* const* const* filters, const Ser
                 masks[i][j][z] = (char*) new Plaintext(masks_vec[i][j][z]);
         }
     }
-
     return masks;
 }
- 
-/* Preprocess and serializes client input vector */
-char* client_fc_preprocess(const uint64_t* vector, const ClientFHE* cfhe, const Metadata* data, uint64_t* enc_size) {
+
+ServerShares server_conv_preprocess_shares(const ServerFHE* sfhe, const Metadata* data,
+        const u64* const* linear_share) {
+    // Recast the needed fhe helpers
+    BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(sfhe->encoder);
+    Encryptor *encryptor = reinterpret_cast<Encryptor*>(sfhe->encryptor);
+
+    // Reshape shares
+    vector<Plaintext> linear = HE_preprocess_noise(linear_share, *data, *encoder);
+    
+    // Recast everything back to opaque C types
+    auto enc_linear_share = new char*[data->out_ct];
+    for (int ct_idx = 0; ct_idx < data->out_ct; ct_idx++) {
+        enc_linear_share[ct_idx] = (char*) new Plaintext(linear[ct_idx]);
+    }
+   
+    ServerShares shares;
+    shares.linear = enc_linear_share;
+    return shares;
+}
+
+
+ClientShares client_fc_preprocess(const ClientFHE* cfhe, const Metadata* data, const u64* vector) {
     // Recast the needed fhe helpers
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
     Encryptor *encryptor = reinterpret_cast<Encryptor*>(cfhe->encryptor);
 
-    auto ciphertext = preprocess_vec(vector, *data, *encryptor, *encoder);
+    // Preprocess input vector
+    Plaintext enc_vec = preprocess_vec(*data, *encoder, vector);
+    std::vector<Ciphertext> ct(1);
+    encryptor->encrypt(enc_vec, ct[0]);
 
     // Convert vector to char array and flatten to a single byte array
-    ostringstream os;
-    ciphertext.save(os);
-    uint64_t ct_size = os.tellp();
-    
-    string ct_ser = os.str();
-    char* ciphertext_c = new char[sizeof(uint64_t) + ct_size];
-    *enc_size = sizeof(uint64_t) + ct_size;
-    memcpy(ciphertext_c, &ct_size, sizeof(uint64_t));
-    std::move(ct_ser.begin(), ct_ser.end(), ciphertext_c+sizeof(uint64_t));
-    return ciphertext_c;
+    ClientShares shares;
+    shares.input_ct = serialize_ct(ct);
+    return shares;
 }
-    
-/* Preprocesses server matrix and enc_noise */
-char** server_fc_preprocess(const uint64_t* const* matrix, const ServerFHE* sfhe, const Metadata* data) {
+
+
+char** server_fc_preprocess(const ServerFHE* sfhe, const Metadata* data, const u64* const* matrix) {
     // Recast the needed fhe helpers
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(sfhe->encoder);
 
-    // Create the filters
+    // Preprocess matrix
     vector<Plaintext> enc_matrix = preprocess_matrix(matrix, *data, *encoder);
    
     // Convert to opaque C types
@@ -227,108 +316,120 @@ char** server_fc_preprocess(const uint64_t* const* matrix, const ServerFHE* sfhe
     return enc_matrix_c;
 }
 
-/* Encrypts a triple share */
-char* triples_preprocess(const uint64_t* share, void* encoder_c, void* encryptor_c,
-        int num_triples, uint64_t* enc_size) {
-    // Recast the needed fhe helpers
-    BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(encoder_c);
-    Encryptor *encryptor = reinterpret_cast<Encryptor*>(encryptor_c);
 
-    auto share_cts = encrypt_shares(share, num_triples, *encryptor, *encoder);
-    int num_ct = share_cts.size();
-
-    // Convert vector to char array and flatten to a single byte array
-    ostringstream os;
-    uint64_t ct_size = 0;
-    for (int ct_idx = 0; ct_idx < share_cts.size(); ct_idx++) {
-        share_cts[ct_idx].save(os);
-        if (!ct_idx)
-            ct_size = os.tellp();
-    }
-    string ct_ser = os.str();
-    char* result = new char[sizeof(uint64_t) + ct_ser.size()];
-    *enc_size = sizeof(uint64_t) + ct_ser.size();
-    memcpy(result, &ct_size, sizeof(uint64_t));
-    std::move(ct_ser.begin(), ct_ser.end(), result+sizeof(uint64_t));
-    return result;
-}
-
-/* Computes the masking noise ciphertext for conv output */        
-char** conv_preprocess_noise(const ServerFHE* sfhe, const Metadata* data, const uint64_t* const* secret_share) {
+ServerShares server_fc_preprocess_shares(const ServerFHE* sfhe, const Metadata* data,
+        const u64* linear_share) {
     // Recast the needed fhe helpers
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(sfhe->encoder);
     Encryptor *encryptor = reinterpret_cast<Encryptor*>(sfhe->encryptor);
 
-    // Generate noise ciphertext
-    vector<Ciphertext> noise = HE_preprocess_noise(secret_share, *data, *encryptor, *encoder);
+    // Reshape shares
+    Plaintext linear = fc_preprocess_noise(*data, *encoder, linear_share);
+    
+    // Recast shares to opaque pointers
+    auto enc_linear_share = new char*[1];
+    enc_linear_share[0] = (char*) new Plaintext(linear);
 
-    // Convert everything back to opaque C types
-    auto enc_noise = new char*[data->out_ct];
-    for (int ct_idx = 0; ct_idx < data->out_ct; ct_idx++) {
-        enc_noise[ct_idx] = (char*) new Ciphertext(noise[ct_idx]);
-    }
-    return enc_noise;
+    ServerShares shares;
+    shares.linear = enc_linear_share;
+    return shares;
 }
 
-/* Computes the masking noise ciphertext for conv output */
-char* fc_preprocess_noise(const ServerFHE* sfhe, const Metadata* data, const uint64_t* secret_share) {
+ServerTriples server_triples_preprocess(const ServerFHE* sfhe, uint32_t num_triples, const u64* a_share,
+    const u64* b_share, const u64* c_share) {
     // Recast the needed fhe helpers
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(sfhe->encoder);
-    Encryptor *encryptor = reinterpret_cast<Encryptor*>(sfhe->encryptor);
 
-    // Generate noise ciphertext
-    Ciphertext noise = fc_preprocess_noise(secret_share, *data, *encryptor, *encoder);
+    // Encode shares
+    vector<Plaintext> enc_a = encode_vec(a_share, num_triples, *encoder);
+    vector<Plaintext> enc_b = encode_vec(b_share, num_triples, *encoder);
+    vector<Plaintext> enc_c = encode_vec(c_share, num_triples, *encoder);
+    
+    // Recast shares to opaque pointers
+    u64 vec_size = enc_a.size();
+    char** a = new char*[vec_size]; 
+    char** b = new char*[vec_size];
+    char** c = new char*[vec_size];
+    for (int i = 0; i < vec_size; i++) {
+        a[i] = (char*) new Plaintext(enc_a[i]);
+        b[i] = (char*) new Plaintext(enc_b[i]);
+        c[i] = (char*) new Plaintext(enc_c[i]);
+    }
 
-    // Convert everything back to opaque C types
-    auto enc_noise = (char*) new Ciphertext(noise);
-    return enc_noise;
+    ServerTriples shares;
+    shares.num = num_triples;
+    shares.vec_len = vec_size;
+    shares.a_share = a;
+    shares.b_share = b;
+    shares.c_share = c;
+    return shares;
 }
 
-/* Performs the convolution on the given input */
-char* server_conv_online(char* ciphertext, char**** masks, const ServerFHE *sfhe, const Metadata *data,
-        Mode mode, char** enc_noise, uint64_t* enc_result_size) {
-    vector<vector<Ciphertext>> ct_vec;
-    vector<vector<vector<Plaintext>>> masks_vec;
-    vector<Ciphertext> noise_ct(data->out_ct);
-    // Resize the vectors to be the correct capacity depending on the mode
-    if (mode == Mode::InputConv) {
-        ct_vec.resize(data->inp_ct, vector<Ciphertext>(data->filter_size));
-        masks_vec.resize(1, 
-                vector<vector<Plaintext>>(data->inp_ct, 
-                    vector<Plaintext>(data->filter_size)));
-    } else if (mode == Mode::Input) {
-        ct_vec.resize(1, vector<Ciphertext>(data->inp_ct));
-        masks_vec.resize(1, 
-                vector<vector<Plaintext>>(data->inp_ct, 
-                    vector<Plaintext>(data->filter_size)));
-    } else if (mode == Mode::Output) {
-        ct_vec.resize(data->inp_ct, vector<Ciphertext>(data->filter_size));
-        masks_vec.resize(data->convs, 
-                vector<vector<Plaintext>>(data->inp_ct, 
-                    vector<Plaintext>(data->filter_size)));
+
+ClientTriples client_triples_preprocess(const ClientFHE* cfhe, uint32_t num_triples, const u64* a_rand,
+        const u64* b_rand) {
+    // Recast the needed fhe helpers
+    BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
+    Encryptor *encryptor = reinterpret_cast<Encryptor*>(cfhe->encryptor);
+
+    // Encode randomizers
+    vector<Plaintext> enc_a = encode_vec(a_rand, num_triples, *encoder);
+    vector<Plaintext> enc_b = encode_vec(b_rand, num_triples, *encoder);
+
+    // Encrypt randomizers
+    u64 vec_size = enc_a.size();
+    vector<Ciphertext> vec_a(vec_size);
+    vector<Ciphertext> vec_b(vec_size);
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+    for (int i = 0; i < vec_size; i++) {
+        encryptor->encrypt(enc_a[i], vec_a[i]);
+        encryptor->encrypt(enc_b[i], vec_b[i]);
     }
-    uint64_t ct_size;
-    memcpy(&ct_size, ciphertext, sizeof(uint64_t));
+
+    // Recast to opaque pointers
+    SerialCT a, b;
+    a = serialize_ct(vec_a);
+    b = serialize_ct(vec_b);
+
+    ClientTriples shares;
+    shares.num = num_triples;
+    shares.vec_len = vec_size;
+    shares.a_ct = a;
+    shares.b_ct = b;
+    return shares;
+}
+
+
+void server_conv_online(const ServerFHE* sfhe, const Metadata* data, SerialCT ciphertext,
+    char**** masks, ServerShares* shares) {
+    // Grab shared pointer to SEALContext
+    auto context = static_cast<SEALContext*>(sfhe->context);
+
+    // Deserialize ciphertexts
     istringstream is;
-    // Remap raw pointers to vectors
-    for (int i = 0; i < ct_vec.size(); i++) {
+    is.rdbuf()->pubsetbuf(ciphertext.inner, ciphertext.size);
+    vector<vector<Ciphertext>> ct_vec(data->inp_ct, vector<Ciphertext>(data->filter_size));
+    for (int i = 0; i < data->inp_ct; i++) {
         for (int j = 0; j < ct_vec[0].size(); j++) {
-            u64 idx = sizeof(uint64_t) + (i*ct_vec[0].size() + j) * ct_size;
-            is.rdbuf()->pubsetbuf(ciphertext + idx, ct_size);
-            ct_vec[i][j].unsafe_load(is);
+            ct_vec[i][j].load(*context, is);
         } 
     }
-    
+
+    // Recast opaque pointers to vectors
+    vector<vector<vector<Plaintext>>> masks_vec(data->convs, 
+            vector<vector<Plaintext>>(data->inp_ct, 
+                vector<Plaintext>(data->filter_size)));
     for (int i = 0; i < masks_vec.size(); i++) {
         for (int j = 0; j < masks_vec[0].size(); j++) {
             for (int z = 0; z < masks_vec[0][0].size(); z++)
                 masks_vec[i][j][z] = *(reinterpret_cast<Plaintext*>(masks[i][j][z]));
         } 
     }
-
+    vector<Plaintext> linear_share(data->out_ct);
     for (int ct_idx = 0; ct_idx < data->out_ct; ct_idx++) {
-        noise_ct[ct_idx] = *(reinterpret_cast<Ciphertext*>(enc_noise[ct_idx]));
+        linear_share[ct_idx] = *(reinterpret_cast<Plaintext*>(shares->linear[ct_idx]));
     }
+
     // Recast needed fhe helpers and ciphertexts
     Encryptor *encryptor = reinterpret_cast<Encryptor*>(sfhe->encryptor);
     Evaluator *evaluator = reinterpret_cast<Evaluator*>(sfhe->evaluator);
@@ -338,52 +439,36 @@ char* server_conv_online(char* ciphertext, char**** masks, const ServerFHE *sfhe
     Ciphertext *zero = reinterpret_cast<Ciphertext*>(sfhe->zero);
 
     // Evaluation
-    vector<Ciphertext> result;
-    if (mode == Mode::InputConv) {
-        result = HE_conv_IP(masks_vec[0], ct_vec, *data, *evaluator, *relin_keys, *zero, noise_ct);
-    } else if (mode == Mode::Input) {
-        // Generate rotations before convolution
-        ct_vec = filter_rotations(ct_vec[0], *data, evaluator, gal_keys);
-        result = HE_conv_IP(masks_vec[0], ct_vec, *data, *evaluator, *relin_keys, *zero, noise_ct);
-    } else if (mode == Mode::Output) {
-        auto rotation_sets = HE_conv_OP(masks_vec, ct_vec, *data, *evaluator, *relin_keys, *zero); 
-        result = HE_output_rotations(rotation_sets, *data, *evaluator, *gal_keys, *zero, noise_ct);
+    auto rotation_sets = HE_conv(masks_vec, ct_vec, *data, *evaluator, *relin_keys, *zero); 
+    vector<Ciphertext> linear = HE_output_rotations(rotation_sets, *data, *evaluator, *gal_keys, *zero);
+
+    // Secret share the result
+    for (int ct_idx = 0; ct_idx < data->out_ct; ct_idx++) {
+        evaluator->sub_plain_inplace(linear[ct_idx], linear_share[ct_idx]);
     }
 
-    // Serialize the resuling ciphertexts and pack them into a byte array to
-    // be sent to client
-    ostringstream os;
-    uint64_t result_size = sizeof(uint64_t) + ct_size*data->out_ct;
-    *enc_result_size = result_size;
-    char* result_c = new char[result_size];
-    memcpy(result_c, &ct_size, sizeof(uint64_t));
-    // Add the remaining ciphertext to the output stream
-    for(int ct = 0; ct < data->out_ct; ct++) {
-        result[ct].save(os);
-    }
-    // Move the output stream to the byte array
-    string ct_ser = os.str();
-    std::move(ct_ser.begin(), ct_ser.end(), result_c+sizeof(uint64_t));
-    return result_c;
+    // Serialize the resulting ciphertexts into bytearrays and store in ServerShares
+    shares->linear_ct = serialize_ct(linear);
 }
 
-/* Performs matrix multiplication on the given inputs */
-char* server_fc_online(char* ciphertext, char** enc_matrix, const ServerFHE* sfhe, const Metadata* data,
-        char* enc_noise, uint64_t* enc_result_size) {
-    uint64_t ct_size;
-    memcpy(&ct_size, ciphertext, sizeof(uint64_t));
+
+void server_fc_online(const ServerFHE* sfhe, const Metadata* data, SerialCT ciphertext,
+    char** matrix, ServerShares* shares) {
+    // Grab shared pointer to SEALContext
+    auto context = static_cast<SEALContext*>(sfhe->context);
+
+    // Deserialize ciphertext
     istringstream is;
-    // Remap raw pointers to vectors
+    is.rdbuf()->pubsetbuf(ciphertext.inner, ciphertext.size);
     Ciphertext input;
-    vector<Plaintext> matrix_vec(data->inp_ct);
-    Ciphertext noise_ct;
-    
-    is.rdbuf()->pubsetbuf(ciphertext + sizeof(uint64_t), ct_size);
-    input.unsafe_load(is);
-    for (int i = 0; i < data->inp_ct; i++)
-        matrix_vec[i] = *(reinterpret_cast<Plaintext*>(enc_matrix[i]));
-    noise_ct = *(reinterpret_cast<Ciphertext*>(enc_noise));
+    input.load(*context, is);
 
+    // Recast opaque pointers
+    vector<Plaintext> matrix_vec(data->inp_ct);
+    for (int i = 0; i < data->inp_ct; i++)
+        matrix_vec[i] = *(reinterpret_cast<Plaintext*>(matrix[i]));
+    Plaintext linear_share = *(reinterpret_cast<Plaintext*>(shares->linear[0]));
+  
     // Recast needed fhe helpers and ciphertexts
     Encryptor *encryptor = reinterpret_cast<Encryptor*>(sfhe->encryptor);
     Evaluator *evaluator = reinterpret_cast<Evaluator*>(sfhe->evaluator);
@@ -393,219 +478,200 @@ char* server_fc_online(char* ciphertext, char** enc_matrix, const ServerFHE* sfh
     Ciphertext *zero = reinterpret_cast<Ciphertext*>(sfhe->zero);
 
     // Evaluation
-    Ciphertext result = fc_online(input, matrix_vec, *data, *evaluator, *gal_keys, *relin_keys, *zero, noise_ct);
+    vector<Ciphertext> linear(1, fc_online(input, matrix_vec, *data, *evaluator, *gal_keys, *relin_keys, *zero));
 
-    // Serialize the resuling ciphertext and pack it into a byte array to
-    // be sent to client
-    ostringstream os;
-    *enc_result_size = sizeof(uint64_t) + ct_size;
-    char* result_c = new char[*enc_result_size];
-    memcpy(result_c, enc_result_size, sizeof(uint64_t));
-    // Move the output stream to the byte array
-    result.save(os);
-    string ct_ser = os.str();
-    std::move(ct_ser.begin(), ct_ser.end(), result_c+sizeof(uint64_t));
-    return result_c;
+    // Linear share
+    evaluator->sub_plain_inplace(linear[0], linear_share);
+
+    // Serialize the resulting ciphertexts into bytearrays and store in ServerShares
+    shares->linear_ct = serialize_ct(linear);
 }
 
-/* Computes the encrypted client's share of multiplication triple */
-char* server_triples_online(char* client_a, char* client_b, const uint64_t* a_share,
-        const uint64_t* b_share, const uint64_t* r_share, const ServerFHE* sfhe,
-        int num_triples, uint64_t* enc_size) {
-    // Recast needed fhe helpers and ciphertexts
+
+void server_triples_online(const ServerFHE* sfhe, SerialCT client_a, SerialCT client_b, ServerTriples* shares) {
+    // Grab shared pointer to SEALContext
+    auto context = static_cast<SEALContext*>(sfhe->context);
+
+    // Recast needed fhe helpers
     Evaluator *evaluator = reinterpret_cast<Evaluator*>(sfhe->evaluator);
-    BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(sfhe->encoder);
     RelinKeys *relin_keys = reinterpret_cast<RelinKeys*>(sfhe->relin_keys);
 
-    int slot_count = encoder->slot_count();
-    int num_ct = ceil((float)num_triples/slot_count);
+    // Recast client ciphertexts
+    vector<Ciphertext> client_a_ct(shares->vec_len);
+    vector<Ciphertext> client_b_ct(shares->vec_len);
+    recast_opaque(client_a, client_a_ct, context);
+    recast_opaque(client_b, client_b_ct, context);
 
-    // Remap raw pointers to vectors
-    vector<Ciphertext> a_ct(num_ct);
-    vector<Ciphertext> b_ct(num_ct);
-    
-    uint64_t ct_size;
-    memcpy(&ct_size, client_a, sizeof(uint64_t));
-
-    istringstream is;
-    for (int ct_idx = 0; ct_idx < num_ct; ct_idx++) {
-        u64 idx = sizeof(uint64_t) + ct_idx*ct_size;
-        is.rdbuf()->pubsetbuf(client_a + idx, ct_size);
-        a_ct[ct_idx].unsafe_load(is);
-        is.rdbuf()->pubsetbuf(client_b + idx, ct_size);
-        b_ct[ct_idx].unsafe_load(is);
+    // Recast opaque pointers
+    vector<Plaintext> a_share(shares->vec_len);
+    vector<Plaintext> b_share(shares->vec_len); 
+    vector<Plaintext> c_share(shares->vec_len);
+#pragma omp parallel for num_threads(numThreads) schedule(static)
+    for (int i = 0; i < shares->vec_len; i++) {
+        a_share[i] = *(reinterpret_cast<Plaintext*>(shares->a_share[i]));
+        b_share[i] = *(reinterpret_cast<Plaintext*>(shares->b_share[i]));
+        c_share[i] = *(reinterpret_cast<Plaintext*>(shares->c_share[i]));
     }
 
-    // Evaluation
-    server_compute_share(a_ct, b_ct, a_share, b_share, r_share, num_triples, *evaluator, *encoder, *relin_keys);
+    // Evaluation - share of c is now in c_ct
+    vector<Ciphertext> c_ct(client_a_ct.size());
+    triples_online(client_a_ct, client_b_ct, c_ct, a_share, b_share, c_share, *evaluator, *relin_keys);
 
-    // Serialize the resuling ciphertext and pack it into a byte array to
-    // be sent to client
-    ostringstream os;
-    for (int ct_idx = 0; ct_idx < num_ct; ct_idx++) {
-        a_ct[ct_idx].save(os);
-    }
-    string ct_ser = os.str();
-    char* client_share_c = new char[sizeof(uint64_t) + ct_ser.size()];
-    *enc_size = sizeof(uint64_t) + ct_ser.size();
-    memcpy(client_share_c, &ct_size, sizeof(uint64_t));
-    std::move(ct_ser.begin(), ct_ser.end(), client_share_c+sizeof(uint64_t));
-    return client_share_c;
+    // Serialize the ciphertexts
+    shares->c_ct = serialize_ct(c_ct);
 }
 
-/* Decrypts and reshapes convolution result */
-uint64_t** client_conv_decrypt(char* c_enc_result, const ClientFHE* cfhe, const Metadata* data) {
+
+void client_conv_decrypt(const ClientFHE *cfhe, const Metadata *data, ClientShares *shares) {
+    // Grab shared pointer to SEALContext
+    auto context = static_cast<SEALContext*>(cfhe->context);
+
     // Recast needed fhe helpers
     Decryptor *decryptor = reinterpret_cast<Decryptor*>(cfhe->decryptor);
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
 
-    // Map byte stream to vector of Ciphertexts
-    vector<Ciphertext> enc_result(data->out_ct);
-    istringstream is;
-    uint64_t ct_size;
-    memcpy(&ct_size, c_enc_result, sizeof(uint64_t));
-    for(int ct = 0; ct < data->out_ct; ct++) {
-        is.str(std::string());
-        is.rdbuf()->pubsetbuf(c_enc_result+sizeof(uint64_t)+ct_size*ct, ct_size);
-        enc_result[ct].unsafe_load(is);
-    }
-
-    auto result = HE_decrypt(enc_result, *data, *decryptor, *encoder);
-    return result;
+    // Recast bytearrays to vectors of Ciphertexts and decrypt
+    vector<Ciphertext> linear_ct(data->out_ct);
+    recast_opaque(shares->linear_ct, linear_ct, context);
+    shares->linear = HE_decrypt(linear_ct, *data, *decryptor, *encoder);
 }
 
-/* Decrypts and reshapes fully-connected result */
-uint64_t* client_fc_decrypt(char* enc_result, const ClientFHE *cfhe, const Metadata *data) {
+void client_fc_decrypt(const ClientFHE *cfhe, const Metadata *data, ClientShares *shares) {
+    // Grab shared pointer to SEALContext
+    auto context = static_cast<SEALContext*>(cfhe->context);
+
     // Recast needed fhe helpers
     Decryptor *decryptor = reinterpret_cast<Decryptor*>(cfhe->decryptor);
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
 
-    // Map byte stream to Ciphertext
-    Ciphertext result_ct;
-    istringstream is;
-    uint64_t ct_size;
-    memcpy(&ct_size, enc_result, sizeof(uint64_t));
-    is.rdbuf()->pubsetbuf(enc_result+sizeof(uint64_t), ct_size);
-    result_ct.unsafe_load(is);
-
-    auto result = fc_postprocess(result_ct, *data, *encoder, *decryptor);
-    return result;
+    // Recast bytearrays to vectors of Ciphertexts and decrypt
+    vector<Ciphertext> linear_ct(1);
+    recast_opaque(shares->linear_ct, linear_ct, context);
+    shares->linear = new u64*[1];
+    shares->linear[0] = fc_postprocess(linear_ct[0], *data, *encoder, *decryptor);
 }
 
 /* Decrypts the clients multiplication triple share */
-uint64_t* client_triples_decrypt(const u64* a_share, const u64* b_share, char* client_share,
-        const ClientFHE* cfhe, int num_triples) {
+void client_triples_decrypt(const ClientFHE *cfhe, SerialCT c, ClientTriples *shares) {
+    // Grab shared pointer to SEALContext
+    auto context = static_cast<SEALContext*>(cfhe->context);
+    
     // Recast needed fhe helpers
-    Decryptor *decryptor = reinterpret_cast<Decryptor*>(cfhe->decryptor);
     BatchEncoder *encoder = reinterpret_cast<BatchEncoder*>(cfhe->encoder);
-    Evaluator *evaluator = reinterpret_cast<Evaluator*>(cfhe->evaluator);
+    Decryptor *decryptor = reinterpret_cast<Decryptor*>(cfhe->decryptor);
 
-    int slot_count = encoder->slot_count();
-    int num_ct = ceil((float)num_triples/slot_count);
+    // Recast received bytearrays to Ciphertexts
+    vector<Ciphertext> c_ct(shares->vec_len);
+    recast_opaque(c, c_ct, context);
 
-    // Remap raw pointers to vectors
-    vector<Ciphertext> client_share_ct(num_ct);
-    istringstream is;
-    uint64_t ct_size;
-    memcpy(&ct_size, client_share, sizeof(uint64_t));
-    for (int ct_idx = 0; ct_idx < num_ct; ct_idx++) {
-        u64 idx = sizeof(uint64_t) + ct_idx*ct_size;
-        is.rdbuf()->pubsetbuf(client_share + idx, ct_size);
-        client_share_ct[ct_idx].unsafe_load(is);
-    }
-
-    return client_share_postprocess(a_share, b_share, client_share_ct, num_triples, *evaluator, *encoder, *decryptor);
+    // Decrypt Ciphertexts
+    shares->c_share = client_triples_postprocess(shares->num, c_ct, *encoder, *decryptor);
 }
 
-/* Free client's allocated keys */
 void client_free_keys(const ClientFHE* cfhe) {
-    // Free CFHE object
     delete (BatchEncoder*) cfhe->encoder;
     delete (Encryptor*) cfhe->encryptor;
     delete (Evaluator*) cfhe->evaluator;
     delete (Decryptor*) cfhe->decryptor;
+
+    // Delete SEALContext ptr
+    auto tmp_ptr = static_cast<SEALContext*>(cfhe->context);
+    delete tmp_ptr;
 }
 
-/* Free the keyshare */
-void free_key_share(char* key_share) {
-    delete[] key_share;
-}
-
-/* Free server's allocated keys */
 void server_free_keys(const ServerFHE *sfhe) {
-    // Free SFHE object
     delete (BatchEncoder*) sfhe->encoder;
     delete (Encryptor*) sfhe->encryptor;
     delete (Evaluator*) sfhe->evaluator;
     delete (GaloisKeys*) sfhe->gal_keys;
     delete (RelinKeys*) sfhe->relin_keys;
     delete (Ciphertext*) sfhe->zero;
+
+    // Delete SEALContext ptr
+    auto tmp_ptr = static_cast<SEALContext*>(sfhe->context);
+    delete tmp_ptr;
 }
 
-/* Free the client's state required for a single convolution */
-void client_conv_free(const Metadata *data, char* ciphertext, uint64_t** result, Mode mode) {
-    // Free ciphertext - Input mode ciphertext is a slightly different
-    // structure but Output and InputConv are the same
-    delete[] ciphertext;
+void free_ct(SerialCT *ct) {
+    delete[] ct->inner;
+}
 
-    // Free result
+void client_conv_free(const Metadata *data, ClientShares* shares) {
+    // Received ciphertexts are allocated by Rust so only need to free input
+    free_ct(&shares->input_ct);
+    // Free shares
     for (int idx = 0; idx < data->out_chans; idx++) {
-        delete[] result[idx];
+        delete[] shares->linear[idx];
     }
-    delete[] result;
+    delete[] shares->linear;
 }
 
-/* Free the server's state required for a single convolution*/
-void server_conv_free(const Metadata *data, char**** masks, char** enc_noise, char* enc_result, Mode mode) {
+
+void server_conv_free(const Metadata* data, char**** masks, ServerShares* shares) {
     // Free masks
-    // Output has a different structure than InputConv and Input modes
-    if (mode == Mode::Output) {
-        for (int conv = 0; conv < data->convs; conv++) {
-            for (int ct_idx = 0; ct_idx < data->inp_ct; ct_idx++) {
-                for (int rot = 0; rot < data->filter_size; rot++) {
-                    delete (Plaintext*) masks[conv][ct_idx][rot]; 
-                }
-                delete[] masks[conv][ct_idx];
-            }
-            delete[] masks[conv];
-        } 
-    } else {
+    for (int conv = 0; conv < data->convs; conv++) {
         for (int ct_idx = 0; ct_idx < data->inp_ct; ct_idx++) {
             for (int rot = 0; rot < data->filter_size; rot++) {
-                delete (Plaintext*) masks[0][ct_idx][rot]; 
+                delete (Plaintext*) masks[conv][ct_idx][rot]; 
             }
-            delete[] masks[0][ct_idx];
+            delete[] masks[conv][ct_idx];
         }
-        delete[] masks[0];
-    }
+        delete[] masks[conv];
+    } 
     delete[] masks;
-
-    // Delete noise Ciphertext    
+    // Free shares
     for (int ct = 0; ct < data->out_ct; ct++) {
-        delete (Ciphertext*) enc_noise[ct];
+        delete (Plaintext*) shares->linear[ct];
     }
-    delete[] enc_result;
-    delete[] enc_noise;
+    delete[] shares->linear;
+    
+    // Free ciphertexts
+    free_ct(&shares->linear_ct);
 }
 
-/* Free the client's state required for a single fc layer */
-void client_fc_free(char* ciphertext, uint64_t* result) {
-   delete[] ciphertext;
-   delete[] result;
+
+void client_fc_free(ClientShares* shares) {
+    // Received ciphertexts are allocated by Rust so only need to free input
+    free_ct(&shares->input_ct);
+    // Free shares
+    delete[] shares->linear[0];
+    delete[] shares->linear;
 }
 
-/* Free the server's state required for a single fc layer*/
-void server_fc_free(const Metadata* data, char** enc_matrix, char* enc_noise, char* enc_result) {
-    delete (Ciphertext*) enc_noise;
-    delete[] enc_result;
 
+void server_fc_free(const Metadata* data, char** enc_matrix, ServerShares* shares) {
+    // Free matrix
     for (int idx = 0; idx < data->inp_ct; idx++) {
         delete (Plaintext*) enc_matrix[idx];
     }
     delete[] enc_matrix;
+    // Free shares
+    delete (Plaintext*) shares->linear[0];
+    delete[] shares->linear;
+    // Free ciphertexts
+    free_ct(&shares->linear_ct);
 }
 
-/* Free a ciphertext message passed for triple generation */
-void triples_free(char* ciphertext) {
-    delete[] ciphertext;
+
+void client_triples_free(ClientTriples* shares) {
+    // Free shares
+    delete[] shares->c_share;
+    // Free ciphertexts
+    free_ct(&shares->a_ct);
+    free_ct(&shares->b_ct);
+}
+
+
+void server_triples_free(ServerTriples* shares) {
+    // Free vectors of Plaintexts
+    for (int idx = 0; idx < shares->vec_len; idx++) {
+        delete (Plaintext*) shares->a_share[idx];
+        delete (Plaintext*) shares->b_share[idx];
+        delete (Plaintext*) shares->c_share[idx];
+    }
+    delete[] shares->a_share;
+    delete[] shares->b_share;
+    delete[] shares->c_share;
+    // Free ciphertexts
+    free_ct(&shares->c_ct);
 }

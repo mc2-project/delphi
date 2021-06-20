@@ -53,7 +53,6 @@ inline void decrypt_and_print(Ciphertext ct, Metadata &data, Decryptor &decrypto
     cout << endl;
 }
 
-
 /* We reuse the convolution struct where image=vector and filter=matrix */
 Metadata fc_metadata(int slot_count, int vector_len, int matrix_h) {
     Metadata data;
@@ -64,19 +63,16 @@ Metadata fc_metadata(int slot_count, int vector_len, int matrix_h) {
     data.filter_h = matrix_h;
     data.filter_w = vector_len;
     data.filter_size =  data.filter_h * data.filter_w;
-    // How many columns of matrix we can fit in a single ciphertext
+    // How many rows of matrix we can fit in a single ciphertext
     data.pack_num = slot_count / next_pow2(data.filter_w);
     // How many total ciphertexts we'll need
     data.inp_ct = ceil((float)next_pow2(data.filter_h) / data.pack_num);
-    
     return data;
 }
 
-Ciphertext preprocess_vec(const u64* input, const Metadata& data,
-        Encryptor& encryptor, BatchEncoder& batch_encoder) {
+Plaintext preprocess_vec(const Metadata& data, BatchEncoder& batch_encoder, const u64* input) {
     // Only works with a ciphertext that fits in a single ciphertext
     assert(data.slot_count >= data.image_size);
-    
     // Create copies of the input vector to fill the ciphertext appropiately.
     // Pack using powers of two for easy rotations later
     uv64 pod_matrix(data.slot_count, 0ULL);
@@ -88,15 +84,12 @@ Ciphertext preprocess_vec(const u64* input, const Metadata& data,
     }
     
     // Encrypt plaintext
-    Ciphertext ciphertext;
-    Plaintext tmp;
-    batch_encoder.encode(pod_matrix, tmp);
-    encryptor.encrypt(tmp, ciphertext);
-    return ciphertext;
+    Plaintext enc_vec;
+    batch_encoder.encode(pod_matrix, enc_vec);
+    return enc_vec;
 }
 
-vector<Plaintext> preprocess_matrix(const u64* const* matrix,
-        const Metadata& data, BatchEncoder& batch_encoder) {
+vector<Plaintext> preprocess_matrix(const u64* const* matrix, const Metadata& data, BatchEncoder& batch_encoder) {
     // Pack the filter in alternating order of needed ciphertexts. This way we
     // rotate the input once per ciphertext
     vector<uv64> mat_pack(data.inp_ct, uv64(data.slot_count, 0ULL));
@@ -137,13 +130,11 @@ vector<Plaintext> preprocess_matrix(const u64* const* matrix,
 
 /* Generates a masking vector of random noise that will be applied to parts of the ciphertext
  * that contain leakage */
-Ciphertext fc_preprocess_noise(const uint64_t* secret_share, const Metadata &data,
-        Encryptor& encryptor, BatchEncoder& batch_encoder) {
+Plaintext fc_preprocess_noise(const Metadata &data, BatchEncoder& batch_encoder, const uint64_t* secret_share) {
     // Create uniform distribution
     random_device rd;
     mt19937 engine(rd());
-    // TODO: Tune this
-    uniform_int_distribution<u64> dist(0, 1<<20);
+    uniform_int_distribution<u64> dist(0, PLAINTEXT_MODULUS);
     auto gen = [&dist, &engine](){
         return dist(engine);
     };
@@ -158,18 +149,16 @@ Ciphertext fc_preprocess_noise(const uint64_t* secret_share, const Metadata &dat
         noise[(row%data.inp_ct)+next_pow2(data.image_size)*curr_set] = secret_share[row];
     }
 
-    // Encrypt the noise vector
-    Ciphertext enc_noise;
-    Plaintext tmp;
-    batch_encoder.encode(noise, tmp);
-    encryptor.encrypt(tmp, enc_noise);
+    // Encode the noise vector
+    Plaintext enc_noise;
+    batch_encoder.encode(noise, enc_noise);
     return enc_noise; 
 }
 
 
 Ciphertext fc_online(Ciphertext& ct, vector<Plaintext>& enc_mat,
         const Metadata& data, Evaluator& evaluator, GaloisKeys& gal_keys,
-        RelinKeys& relin_keys, Ciphertext& zero, Ciphertext& enc_noise) {
+        RelinKeys& relin_keys, Ciphertext& zero) {
     Ciphertext result = zero;
     // For each matrix ciphertext, rotate the input vector once and multiply +
     // add
@@ -191,10 +180,9 @@ Ciphertext fc_online(Ciphertext& ct, vector<Plaintext>& enc_mat,
         }
         evaluator.add_inplace(result, tmp);
     }
-    // Add noise to cover leakage
-    evaluator.add_inplace(result, enc_noise);
     return result;
 }
+
 
 u64* fc_postprocess(Ciphertext& ct, const Metadata& data, BatchEncoder& batch_encoder, Decryptor& decryptor) {
     // Decrypt + decode ciphertext
@@ -211,63 +199,3 @@ u64* fc_postprocess(Ciphertext& ct, const Metadata& data, BatchEncoder& batch_en
     }
     return result;
 }
-
-/* Example use of fc functions */
-u64* HE_fc(u64* input, u64** matrix, int vector_len, int matrix_h) {
-    //---------------Param and Key Generation---------------
-    EncryptionParameters parms(scheme_type::BFV);
-    parms.set_poly_modulus_degree(POLY_MOD_DEGREE);
-    parms.set_coeff_modulus(CoeffModulus::BFVDefault(POLY_MOD_DEGREE));
-    parms.set_plain_modulus(PLAINTEXT_MODULUS);
-    auto context = SEALContext::Create(parms);
-    KeyGenerator keygen(context);
-    auto public_key = keygen.public_key();
-    auto secret_key = keygen.secret_key();
-    // Parameters are large enough that we should be fine with these at max
-    // decomposition
-    auto relin_keys = keygen.relin_keys();
-    auto gal_keys = keygen.galois_keys();
-
-    Encryptor encryptor(context, public_key);
-    Evaluator evaluator(context);
-    Decryptor decryptor(context, secret_key); 
-    BatchEncoder batch_encoder(context);
-
-    int slot_count = batch_encoder.slot_count();
-    // Generate the zero ciphertext
-    vector<u64> pod_matrix(slot_count, 0ULL);
-    Plaintext tmp;
-    Ciphertext zero;
-    batch_encoder.encode(pod_matrix, tmp);
-    encryptor.encrypt(tmp, zero);
-    //-------------------------------------------
-    auto data = fc_metadata(slot_count, vector_len, matrix_h);
-
-    u64* secret_share = new u64[vector_len];
-    for (int i = 0; i < vector_len; i++)
-        secret_share[i] = 0;
-
-    // Generate noise
-    Ciphertext enc_noise = fc_preprocess_noise(secret_share, data, encryptor, batch_encoder);
-
-    auto ct = preprocess_vec(input, data, encryptor, batch_encoder);
-    auto enc_mat = preprocess_matrix(matrix, data, batch_encoder);
-
-    auto result = fc_online(ct, enc_mat, data, evaluator, gal_keys, relin_keys, zero, enc_noise);
-
-    auto final_result = fc_postprocess(result, data, batch_encoder, decryptor);
-
-    return final_result;
-}
-
-uv64 fc_plain(u64* input, u64** matrix, int vector_len, int matrix_h) {
-    uv64 result(matrix_h, 0ULL);
-    for (int row = 0; row < matrix_h; row++){
-        for (int idx = 0; idx < vector_len; idx++){
-            u64 partial = input[idx]*matrix[row][idx];
-            result[row] = result[row] + partial;
-        }
-    }
-    return result;
-}
-

@@ -1,8 +1,4 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT license.
-
-cmake_minimum_required(VERSION 3.10)
-
+cmake_minimum_required(VERSION 3.12)
 project(DELPHI VERSION 1.0 LANGUAGES C CXX)
 
 add_definitions(${GCC_COVERAGE_COMPILE_FLAGS})
@@ -11,16 +7,25 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 
 set(LIB "src/lib")
 set(BIN "src/bin")
-
-include_directories(${CMAKE_SOURCE_DIR}/src/lib)
-set(SEAL_DIR ${CMAKE_SOURCE_DIR}/SEAL/lib/cmake/SEAL)
-
 add_library( DelphiOffline STATIC
     ${LIB}/interface.cpp ${LIB}/conv2d.cpp ${LIB}/fc_layer.cpp
     ${LIB}/triples_gen.cpp)
+include_directories(${CMAKE_SOURCE_DIR}/src/lib)
 
-find_package(SEAL 3.3.2 EXACT REQUIRED)
-target_link_libraries(DelphiOffline SEAL::seal)
+include(FetchContent)
+FetchContent_Declare(
+  seal
+  GIT_REPOSITORY https://github.com/microsoft/SEAL
+  GIT_TAG        v3.6.5
+)
+option(SEAL_THROW_ON_TRANSPARENT_CIPHERTEXT OFF)
+option(SEAL_USE_ZLIB OFF)
+option(SEAL_USE_ZSTD ON)
+FetchContent_MakeAvailable(seal)
+
+find_package(OpenMP REQUIRED)
+target_link_libraries(DelphiOffline seal OpenMP::OpenMP_CXX)
+
 
 option(UNITTESTS "Build unittests" OFF)
 if(UNITTESTS)

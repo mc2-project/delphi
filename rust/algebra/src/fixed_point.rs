@@ -40,10 +40,10 @@ pub trait FixedPointParameters: Send + Sync {
 #[must_use]
 pub struct FixedPoint<P: FixedPointParameters> {
     pub inner: P::Field,
-    num_muls:  u8,
+    num_muls: u8,
     #[serde(skip)]
     #[derivative(Debug = "ignore")]
-    _params:   PhantomData<P>,
+    _params: PhantomData<P>,
 }
 
 impl<P: FixedPointParameters> Zero for FixedPoint<P> {
@@ -148,9 +148,9 @@ impl<P: FixedPointParameters> FixedPoint<P> {
         one_repr.muln(P::EXPONENT_CAPACITY as u32);
         let one = P::Field::from_repr(one_repr);
         Self {
-            inner:    one,
+            inner: one,
             num_muls: 0,
-            _params:  PhantomData,
+            _params: PhantomData,
         }
     }
 

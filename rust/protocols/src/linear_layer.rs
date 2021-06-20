@@ -11,15 +11,11 @@ use neural_network::{
     tensors::{Input, Output},
     Evaluate,
 };
-use protocols_sys::{
-    client_linear::SEALClientLinear, key_share::KeyShare, server_linear::SEALServerLinear,
-    ClientFHE, ServerFHE,
-};
+use protocols_sys::{SealClientCG, SealServerCG, *};
 use rand::{CryptoRng, RngCore};
 use std::{
     io::{Read, Write},
     marker::PhantomData,
-    ops::Deref,
     os::raw::c_char,
 };
 
@@ -49,48 +45,31 @@ where
     pub fn offline_server_protocol<R: Read + Send, W: Write + Send, RNG: RngCore + CryptoRng>(
         reader: &mut IMuxSync<R>,
         writer: &mut IMuxSync<W>,
-        layer: &LinearLayer<AdditiveShare<P>, FixedPoint<P>>,
+        _input_dims: (usize, usize, usize, usize),
+        output_dims: (usize, usize, usize, usize),
+        server_cg: &mut SealServerCG,
         rng: &mut RNG,
-        sfhe_op: &mut Option<ServerFHE>,
     ) -> Result<Output<P::Field>, bincode::Error> {
         // TODO: Add batch size
         let start_time = timer_start!(|| "Server linear offline protocol");
-        // If keys haven't been populated yet, receive the keys from client
-        let sfhe = match sfhe_op {
-            Some(k) => k,
-            None => {
-                let key_time = timer_start!(|| "Receiving keys");
-                let keys: OfflineServerKeyRcv = crate::bytes::deserialize(&mut *reader)?;
-                timer_end!(key_time);
-
-                let mut key_share = KeyShare::new();
-                let sfhe = key_share.receive(keys.msg());
-                sfhe_op.replace(sfhe);
-                sfhe_op.as_mut().unwrap()
-            },
-        };
-
         let preprocess_time = timer_start!(|| "Preprocessing");
-        let (_, output_dims, _) = layer.all_dimensions();
-        // Create SEALServer object for C++ interopt
-        let mut seal_server = SEALServerLinear::new(&sfhe, layer);
 
         // Sample server's randomness `s` for randomizing the i+1-th layer's share.
-        let mut server_randomness = Output::zeros(output_dims);
+        let mut server_randomness: Output<P::Field> = Output::zeros(output_dims);
+        // TODO
         for r in &mut server_randomness {
             *r = P::Field::uniform(rng);
         }
-        let sr2 = -(server_randomness.deref().clone());
 
         // Convert the secret share from P::Field -> u64
         let mut server_randomness_c = Output::zeros(output_dims);
         server_randomness_c
             .iter_mut()
-            .zip(&sr2)
+            .zip(&server_randomness)
             .for_each(|(e1, e2)| *e1 = e2.into_repr().0);
 
         // Preprocess filter rotations and noise masks
-        seal_server.preprocess(server_randomness_c, layer.kernel_to_repr());
+        server_cg.preprocess(&server_randomness_c);
 
         timer_end!(preprocess_time);
 
@@ -103,7 +82,7 @@ where
         // Compute client's share for layer `i + 1`.
         // That is, compute -Lr + s
         let processing = timer_start!(|| "Processing Layer");
-        let enc_result_vec = seal_server.process(client_share_i);
+        let enc_result_vec = server_cg.process(client_share_i);
         timer_end!(processing);
 
         let send_time = timer_start!(|| "Sending result");
@@ -127,40 +106,19 @@ where
         writer: &mut IMuxSync<W>,
         input_dims: (usize, usize, usize, usize),
         output_dims: (usize, usize, usize, usize),
-        layer_info: &LinearLayerInfo<AdditiveShare<P>, FixedPoint<P>>,
+        client_cg: &mut SealClientCG,
         rng: &mut RNG,
-        cfhe_op: &mut Option<ClientFHE>,
     ) -> Result<(Input<P::Field>, Output<AdditiveShare<P>>), bincode::Error> {
         // TODO: Add batch size
         let start_time = timer_start!(|| "Linear offline protocol");
-        // If keys haven't been generated yet, do keygen
-        let cfhe = match cfhe_op {
-            Some(k) => k,
-            None => {
-                let mut key_share = KeyShare::new();
-                let (cfhe, keys_vec) = key_share.generate();
-
-                let key_time = timer_start!(|| "Sending keys");
-                let sent_message = OfflineClientKeySend::new(&keys_vec);
-                crate::bytes::serialize(&mut *writer, &sent_message)?;
-                timer_end!(key_time);
-
-                // Insert cfhe into optional
-                // TODO
-                cfhe_op.replace(cfhe);
-                cfhe_op.as_mut().unwrap()
-            },
-        };
         let preprocess_time = timer_start!(|| "Client preprocessing");
-        // Create SEALClient object for C++ interopt
-        let mut seal_client = SEALClientLinear::new(&cfhe, layer_info, input_dims, output_dims);
 
         // Generate random share -> r2 = -r1 (because the secret being shared is zero).
         let client_share: Input<FixedPoint<P>> = Input::zeros(input_dims);
         let (r1, r2) = client_share.share(rng);
 
         // Preprocess and encrypt client secret share for sending
-        let ct_vec = seal_client.preprocess(&r2);
+        let ct_vec = client_cg.preprocess(&r2.to_repr());
         timer_end!(preprocess_time);
 
         // Send layer_i randomness for processing by server.
@@ -176,8 +134,8 @@ where
         let post_time = timer_start!(|| "Post-processing");
         let mut client_share_next = Input::zeros(output_dims);
         // Decrypt + reshape resulting ciphertext and free C++ allocations
-        seal_client.decrypt(enc_result.msg().as_mut_ptr());
-        seal_client.postprocess(&mut client_share_next);
+        client_cg.decrypt(enc_result.msg());
+        client_cg.postprocess(&mut client_share_next);
 
         // Should be equal to -(L*r1 - s)
         assert_eq!(client_share_next.dim(), output_dims);
@@ -206,13 +164,13 @@ where
             LinearLayerInfo::Conv2d { .. } | LinearLayerInfo::FullyConnected => {
                 let sent_message = MsgSend::new(x_s);
                 crate::bytes::serialize(writer, &sent_message)?;
-            },
+            }
             _ => {
                 layer.evaluate_naive(x_s, next_layer_input);
                 for elem in next_layer_input.iter_mut() {
                     elem.inner.signed_reduce_in_place();
                 }
-            },
+            }
         }
         timer_end!(start);
         Ok(())
@@ -231,7 +189,7 @@ where
             LinearLayer::Conv2d { .. } | LinearLayer::FullyConnected { .. } => {
                 let recv: MsgRcv<P> = crate::bytes::deserialize(reader).unwrap();
                 recv.msg()
-            },
+            }
             _ => Input::zeros(input_derandomizer.dim()),
         };
         input.randomize_local_share(input_derandomizer);

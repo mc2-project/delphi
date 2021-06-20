@@ -64,7 +64,7 @@ fn test_torch_cpu(b: &mut Bencher) {
         output_dims,
     };
     let layer = LinearLayer::Conv2d {
-        dims:   layer_dims,
+        dims: layer_dims,
         params: conv_params,
     };
 
@@ -106,7 +106,7 @@ fn test_torch_gpu(b: &mut Bencher) {
         output_dims,
     };
     let layer = LinearLayer::Conv2d {
-        dims:   layer_dims,
+        dims: layer_dims,
         params: conv_params,
     };
 

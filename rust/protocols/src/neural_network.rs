@@ -29,7 +29,7 @@ use crypto_primitives::{
 };
 
 use crate::{gc::ReluProtocol, linear_layer::LinearProtocol, quad_approx::QuadApproxProtocol};
-use protocols_sys::{ClientFHE, ServerFHE};
+use protocols_sys::*;
 use std::collections::BTreeMap;
 
 pub struct NNProtocol<P: FixedPointParameters> {
@@ -40,10 +40,10 @@ pub const CLIENT: usize = 1;
 pub const SERVER: usize = 2;
 
 pub struct ServerState<P: FixedPointParameters> {
-    pub linear_state:            BTreeMap<usize, Output<P::Field>>,
-    pub relu_encoders:           Vec<Encoder>,
+    pub linear_state: BTreeMap<usize, Output<P::Field>>,
+    pub relu_encoders: Vec<Encoder>,
     pub relu_output_randomizers: Vec<P::Field>,
-    pub approx_state:            Vec<Triple<P::Field>>,
+    pub approx_state: Vec<Triple<P::Field>>,
 }
 // This is a hack since Send + Sync aren't implemented for the raw pointer types
 // Not sure if there's a cleaner way to guarantee this
@@ -51,13 +51,13 @@ unsafe impl<P: FixedPointParameters> Send for ServerState<P> {}
 unsafe impl<P: FixedPointParameters> Sync for ServerState<P> {}
 
 pub struct ClientState<P: FixedPointParameters> {
-    pub relu_circuits:                 Vec<GarbledCircuit>,
-    pub relu_server_labels:            Vec<Vec<Wire>>,
-    pub relu_client_labels:            Vec<Vec<Wire>>,
-    pub relu_next_layer_randomizers:   Vec<P::Field>,
-    pub approx_state:                  Vec<Triple<P::Field>>,
+    pub relu_circuits: Vec<GarbledCircuit>,
+    pub relu_server_labels: Vec<Vec<Wire>>,
+    pub relu_client_labels: Vec<Vec<Wire>>,
+    pub relu_next_layer_randomizers: Vec<P::Field>,
+    pub approx_state: Vec<Triple<P::Field>>,
     /// Randomizers for the input of a linear layer.
-    pub linear_randomizer:             BTreeMap<usize, Input<P::Field>>,
+    pub linear_randomizer: BTreeMap<usize, Input<P::Field>>,
     /// Shares of the output of a linear layer
     pub linear_post_application_share: BTreeMap<usize, Output<AdditiveShare<P>>>,
 }
@@ -135,7 +135,7 @@ where
         let mut num_relu = 0;
         let mut num_approx = 0;
         let mut linear_state = BTreeMap::new();
-        let mut sfhe_op: Option<ServerFHE> = None;
+        let sfhe: ServerFHE = crate::server_keygen(reader)?;
 
         let start_time = timer_start!(|| "Server offline phase");
         let linear_time = timer_start!(|| "Linear layers offline phase");
@@ -144,30 +144,44 @@ where
                 Layer::NLL(NonLinearLayer::ReLU(dims)) => {
                     let (b, c, h, w) = dims.input_dimensions();
                     num_relu += b * c * h * w;
-                },
+                }
                 Layer::NLL(NonLinearLayer::PolyApprox { dims, .. }) => {
                     let (b, c, h, w) = dims.input_dimensions();
                     num_approx += b * c * h * w;
-                },
+                }
                 Layer::LL(layer) => {
                     let randomizer = match &layer {
                         LinearLayer::Conv2d { .. } | LinearLayer::FullyConnected { .. } => {
-                            LinearProtocol::offline_server_protocol(
+                            let mut cg_handler = match &layer {
+                                LinearLayer::Conv2d { .. } => SealServerCG::Conv2D(
+                                    server_cg::Conv2D::new(&sfhe, layer, &layer.kernel_to_repr()),
+                                ),
+                                LinearLayer::FullyConnected { .. } => {
+                                    SealServerCG::FullyConnected(server_cg::FullyConnected::new(
+                                        &sfhe,
+                                        layer,
+                                        &layer.kernel_to_repr(),
+                                    ))
+                                }
+                                _ => unreachable!(),
+                            };
+                            LinearProtocol::<P>::offline_server_protocol(
                                 reader,
                                 writer,
-                                &layer,
+                                layer.input_dimensions(),
+                                layer.output_dimensions(),
+                                &mut cg_handler,
                                 rng,
-                                &mut sfhe_op,
                             )?
-                        },
+                        }
                         // AvgPool and Identity don't require an offline phase
                         LinearLayer::AvgPool { dims, .. } => {
                             Output::zeros(dims.output_dimensions())
-                        },
+                        }
                         LinearLayer::Identity { dims } => Output::zeros(dims.output_dimensions()),
                     };
                     linear_state.insert(i, randomizer);
-                },
+                }
             }
         }
         timer_end!(linear_time);
@@ -185,11 +199,7 @@ where
             num_approx
         ));
         let approx_state = QuadApproxProtocol::offline_server_protocol::<FPBeaversMul<P>, _, _, _>(
-            reader,
-            writer,
-            &(sfhe_op.unwrap()),
-            num_approx,
-            rng,
+            reader, writer, &sfhe, num_approx, rng,
         )?;
         timer_end!(approx_time);
         timer_end!(start_time);
@@ -213,7 +223,7 @@ where
         let mut out_shares = BTreeMap::new();
         let mut relu_layers = Vec::new();
         let mut approx_layers = Vec::new();
-        let mut cfhe_op: Option<ClientFHE> = None;
+        let cfhe: ClientFHE = crate::client_keygen(writer)?;
 
         let start_time = timer_start!(|| "Client offline phase");
         let linear_time = timer_start!(|| "Linear layers offline phase");
@@ -223,25 +233,45 @@ where
                     relu_layers.push(i);
                     let (b, c, h, w) = dims.input_dimensions();
                     num_relu += b * c * h * w;
-                },
+                }
                 LayerInfo::NLL(dims, NonLinearLayerInfo::PolyApprox { .. }) => {
                     approx_layers.push(i);
                     let (b, c, h, w) = dims.input_dimensions();
                     num_approx += b * c * h * w;
-                },
+                }
                 LayerInfo::LL(dims, linear_layer_info) => {
+                    let input_dims = dims.input_dimensions();
+                    let output_dims = dims.output_dimensions();
                     let (in_share, mut out_share) = match &linear_layer_info {
                         LinearLayerInfo::Conv2d { .. } | LinearLayerInfo::FullyConnected => {
+                            let mut cg_handler = match &linear_layer_info {
+                                LinearLayerInfo::Conv2d { .. } => {
+                                    SealClientCG::Conv2D(client_cg::Conv2D::new(
+                                        &cfhe,
+                                        linear_layer_info,
+                                        input_dims,
+                                        output_dims,
+                                    ))
+                                }
+                                LinearLayerInfo::FullyConnected => {
+                                    SealClientCG::FullyConnected(client_cg::FullyConnected::new(
+                                        &cfhe,
+                                        linear_layer_info,
+                                        input_dims,
+                                        output_dims,
+                                    ))
+                                }
+                                _ => unreachable!(),
+                            };
                             LinearProtocol::<P>::offline_client_protocol(
                                 reader,
                                 writer,
-                                dims.input_dimensions(),
-                                dims.output_dimensions(),
-                                &linear_layer_info,
+                                layer.input_dimensions(),
+                                layer.output_dimensions(),
+                                &mut cg_handler,
                                 rng,
-                                &mut cfhe_op,
                             )?
-                        },
+                        }
                         _ => {
                             // AvgPool and Identity don't require an offline communication
                             if out_shares.keys().any(|k| k == &(i - 1)) {
@@ -259,7 +289,7 @@ where
                                     Output::zeros(dims.output_dimensions()),
                                 )
                             }
-                        },
+                        }
                     };
 
                     // We reduce here becase the input to future layers requires
@@ -272,7 +302,7 @@ where
                     in_shares.insert(i, in_share);
                     // -(Lr + s)
                     out_shares.insert(i, out_share);
-                },
+                }
             }
         }
         timer_end!(linear_time);
@@ -338,11 +368,7 @@ where
             num_approx
         ));
         let approx_state = QuadApproxProtocol::offline_client_protocol::<FPBeaversMul<P>, _, _, _>(
-            reader,
-            writer,
-            &(cfhe_op.unwrap()),
-            num_approx,
-            rng,
+            reader, writer, &cfhe, num_approx, rng,
         )?;
         timer_end!(approx_time);
         timer_end!(start_time);
@@ -402,7 +428,7 @@ where
                         .expect("shape should be correct")
                         .into();
                     timer_end!(start_time);
-                },
+                }
                 Layer::NLL(NonLinearLayer::PolyApprox { dims, poly, .. }) => {
                     let start_time = timer_start!(|| "Approx layer");
                     let layer_size = next_layer_input.len();
@@ -426,7 +452,7 @@ where
                         .expect("shape should be correct")
                         .into();
                     timer_end!(start_time);
-                },
+                }
                 Layer::LL(layer) => {
                     let start_time = timer_start!(|| "Linear layer");
                     // Input for the next layer.
@@ -457,7 +483,7 @@ where
                         share.inner.signed_reduce_in_place();
                     }
                     timer_end!(start_time);
-                },
+                }
             }
         }
         let sent_message = MsgSend::new(&next_layer_input);
@@ -536,7 +562,7 @@ where
                                 .expect("shape should be correct")
                                 .into();
                             timer_end!(start_time);
-                        },
+                        }
                         NonLinearLayerInfo::PolyApprox { poly, .. } => {
                             let start_time = timer_start!(|| "Approx layer");
                             let layer_size = next_layer_input.len();
@@ -563,9 +589,9 @@ where
                             next_layer_input
                                 .randomize_local_share(&state.linear_randomizer[&(i + 1)]);
                             timer_end!(start_time);
-                        },
+                        }
                     }
-                },
+                }
                 LayerInfo::LL(_, layer_info) => {
                     let start_time = timer_start!(|| "Linear layer");
                     // Send server secret share if required by the layer
@@ -586,7 +612,7 @@ where
                         next_layer_input.randomize_local_share(&state.linear_randomizer[&(i + 1)]);
                     }
                     timer_end!(start_time);
-                },
+                }
             }
         }
         let result = crate::bytes::deserialize(reader).map(|output: MsgRcv<P>| {

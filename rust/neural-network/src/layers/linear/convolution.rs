@@ -15,13 +15,13 @@ pub enum Padding {
 
 #[derive(Debug)]
 pub struct Conv2dParams<F, C> {
-    pub padding:     Padding,
-    pub stride:      usize,
-    pub kernel:      Kernel<C>,
-    pub bias:        Kernel<C>,
-    pub tch_config:  Option<nn::Conv2D>,
+    pub padding: Padding,
+    pub stride: usize,
+    pub kernel: Kernel<C>,
+    pub bias: Kernel<C>,
+    pub tch_config: Option<nn::Conv2D>,
     pub eval_method: crate::EvalMethod,
-    _variable:       PhantomData<F>,
+    _variable: PhantomData<F>,
 }
 
 unsafe impl<F, C> Send for Conv2dParams<F, C> {}

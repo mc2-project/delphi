@@ -492,11 +492,11 @@ impl<P: Fp384Parameters> FromStr for Fp384<P> {
                     res.add_assign(&Self::from_repr(<Self as PrimeField>::BigInt::from(
                         u64::from(c),
                     )));
-                },
+                }
                 None => {
                     println!("Not valid digit!");
                     return Err(());
-                },
+                }
             }
         }
         if !res.is_valid() {

@@ -263,10 +263,10 @@ impl<P: Fp32Parameters> FromStr for Fp32<P> {
                     res.add_assign(&Self::from_repr(<Self as PrimeField>::BigInt::from(
                         u64::from(c),
                     )));
-                },
+                }
                 None => {
                     return Err(());
-                },
+                }
             }
         }
         if !res.is_valid() {

@@ -12,19 +12,8 @@
 
 const uint64_t PLAINTEXT_MODULUS = 2061584302081;
 const uint64_t POLY_MOD_DEGREE = 8192;    
+const int numThreads = 4;
 
-/*
- * Each type here refers to how much preprocessing the client is doing in order
- * of bandwidth cost
- *   InputConv   -> user does input packing + filter rotations + convolution rotations
- *   Input       -> user does input packing + filter rotations
- *   Output      -> user does output packing + filter rotations
- */
-typedef enum Mode {
-    InputConv,
-    Input,
-    Output,
-} Mode;
 
 /* This is ugly but very useful. */
 typedef struct Metadata {
@@ -58,19 +47,19 @@ typedef struct Metadata {
     /* The modulo used when deciding which output channels to pack into a mask */
     int32_t out_mod;
     /* How many permutations of ciphertexts are needed to generate all
-     * int32_termediate rotation sets (Output Packing Only) */
+     * int32_termediate rotation sets */
     int32_t half_perms;
-    /* Whether the last output half can fit repeats (Output Packing Only) */
+    /* Whether the last output half can fit repeats */
     bool last_repeats;
     /* The number of Channels in a single repeat. This may require padding
-     * since the repeat must be a power of 2 (Output Packing Only) */
+     * since the repeat must be a power of 2 */
     int32_t repeat_chans;
-    /* The number of rotations for each ciphertext half (Output Packing Only) */
+    /* The number of rotations for each ciphertext half */
     int32_t half_rots;
-    /* The number of rotations for the last ciphertext half (Output Packing Only) */
+    /* The number of rotations for the last ciphertext half */
     int32_t last_rots;
     /* Total number of convolutions needed to generate all intermediate
-     * rotations sets (Output Packing Only) */
+     * rotations sets */
     int32_t convs;
     int32_t stride_h;
     int32_t stride_w;
@@ -86,6 +75,7 @@ typedef struct Metadata {
 extern "C" {
 #endif
     typedef struct ClientFHE {
+        void* context;
         void* encoder;
         void* encryptor;
         void* evaluator;
@@ -93,6 +83,7 @@ extern "C" {
     } ClientFHE;
 
     typedef struct ServerFHE {
+        void* context;
         void* encoder;
         void* encryptor;
         void* evaluator;
@@ -100,64 +91,125 @@ extern "C" {
         void* relin_keys;
         char* zero;
     } ServerFHE;
+
+    typedef struct SerialCT {
+        char* inner;
+        uint64_t size;
+    } SerialCT;
+
+    typedef struct ServerShares {
+        // Opaque vectors of Plaintexts  
+        char** linear;
+        // Opaque ciphertexts to be sent to client
+        SerialCT linear_ct;
+    } ServerShares;
+
+    typedef struct ClientShares {
+        // Opaque ciphertext sent to server
+        SerialCT input_ct;
+        // Opaque ciphertexts received from server
+        SerialCT linear_ct;
+        // Decryption results
+        uint64_t** linear;
+    } ClientShares;
+
+    typedef struct ServerTriples {
+        // Batch size
+        uint32_t num;
+        uint64_t vec_len;
+        // Opaque vectors of Plaintexts
+        char** a_share;
+        char** b_share;
+        char** c_share;
+        // Opaque ciphertexts sent to client
+        SerialCT c_ct;
+    } ServerTriples;
+
+    typedef struct ClientTriples {
+        // Batch size
+        uint32_t num;
+        uint64_t vec_len;
+        // Opaque ciphertexts sent to server
+        SerialCT a_ct;
+        SerialCT b_ct;
+        // Decryption results
+        uint64_t* c_share;
+    } ClientTriples;
     
     /* Generates new keys and helpers for Client. Returns the helpers and allocates
      * a bytestream for sharing the keys with the server */
-    ClientFHE client_keygen(char** key_share, uint64_t* key_share_len);
+    ClientFHE client_keygen(SerialCT *key_share);
 
-    /* Generates new helpers for Server given a public_key */
-    ServerFHE server_keygen(char* key_share);
+    /* Generates keys and helpers for Server given a key_share */
+    ServerFHE server_keygen(SerialCT key_share); 
 
     /* Populates the Metadata struct for Conv layer */
     Metadata conv_metadata(void* batch_encoder, int32_t image_h, int32_t image_w,
             int32_t filter_h, int32_t filter_w, int32_t inp_chans, int32_t out_chans, int32_t stride_h,
-            int32_t stride_w, bool pad_valid, Mode mode);
+            int32_t stride_w, bool pad_valid);
 
     /* Populates the Metadata struct for FC layer */
     Metadata fc_metadata(void* batch_encoder, int32_t vector_len, int32_t matrix_h);
+
+    /* Encrypts and serializes a vector */
+    SerialCT encrypt_vec(const ClientFHE* cfhe, const uint64_t* vec, uint64_t vec_size);
+
+    /* Deserializes and decrypts a vector */
+    uint64_t* decrypt_vec(const ClientFHE* cfhe, SerialCT *ct, uint64_t size);
+
+    /* Preprocesses and serializes input image */
+    ClientShares client_conv_preprocess(const ClientFHE* cfhe, const Metadata* data, const uint64_t* const* image);
     
-    /* Allocates correct serialized objects for each provided pointer */
-    char* client_conv_preprocess(const uint64_t* const* image, const ClientFHE* cfhe, const Metadata* data, Mode mode, uint64_t* enc_size);
-    
-    /* Generates necessary filters and stores in tensor */
-    char**** server_conv_preprocess(const uint64_t* const* const* filters, const ServerFHE* sfhe, const Metadata* data, Mode mode);
+    /* Preprocesses convolution filters */
+    char**** server_conv_preprocess(const ServerFHE* sfhe, const Metadata* data, const uint64_t* const* const* filters);
 
-    /* Preprocess and serializes client input vector */
-    char* client_fc_preprocess(const uint64_t* vector, const ClientFHE* cfhe, const Metadata* data, uint64_t* enc_size);
+    /* Converts secret shares to opaque SEAL Plaintexts for conv computation */        
+    ServerShares server_conv_preprocess_shares(const ServerFHE* sfhe, const Metadata* data,
+            const uint64_t* const* linear_share);
 
-    /* Preprocesses server matrix and enc_noise */
-    char** server_fc_preprocess(const uint64_t* const* matrix, const ServerFHE* sfhe, const Metadata* data);
+    /* Preprocess and serialize client input vector */
+    ClientShares client_fc_preprocess(const ClientFHE* cfhe, const Metadata* data, const uint64_t* vector);
 
-    /* Encrypts client's a for each multiplication triple */
-    char* triples_preprocess(const uint64_t* share, void* encoder_c, void* encryptor_c, int num_triples, uint64_t* enc_size);
+    /* Preprocess server matrix */
+    char** server_fc_preprocess(const ServerFHE* sfhe, const Metadata* data, const uint64_t* const* matrix);
 
-    /* Computes the masking noise ciphertext for conv output */        
-    char** conv_preprocess_noise(const ServerFHE* sfhe, const Metadata* data, const uint64_t* const* secret_share);
-    
+    /* Converts secret shares to opaque SEAL Plaintexts for fc computation */
+    ServerShares server_fc_preprocess_shares(const ServerFHE* sfhe, const Metadata* data,
+        const uint64_t* linear_share);
+
+    /* Converts secret shares to opaque SEAL Plaintexts for multiplication triples */
+    ServerTriples server_triples_preprocess(const ServerFHE* sfhe, uint32_t num_triples, const uint64_t* a_share,
+        const uint64_t* b_share, const uint64_t* c_share);
+
+    /* Encrypts client inputs for multiplication triples */
+    ClientTriples client_triples_preprocess(const ClientFHE* cfhe, uint32_t num_triples, const uint64_t* a_rand,
+        const uint64_t* b_rand);
+
+    /* Encrypts client inputs for pairwise randomness */
+    ClientTriples client_rand_preprocess(const ClientFHE* cfhe, uint32_t num_rand, const uint64_t* rand);
+
     /* Computes the masking noise ciphertext for conv output */
     char* fc_preprocess_noise(const ServerFHE* sfhe, const Metadata* data, const uint64_t* secret_share);
 
-    /* Performs the convolution on the given input */
-    char* server_conv_online(char* ciphertext, char**** masks, const ServerFHE* sfhe, const Metadata* data,
-            Mode mode, char** enc_noise, uint64_t* enc_result_size);
+    /* Performs convolution on the given input and stores the result in the shares struct */
+    void server_conv_online(const ServerFHE* sfhe, const Metadata* data, SerialCT ciphertext,
+        char**** masks, ServerShares* shares);
     
     /* Performs matrix multiplication on the given inputs */
-    char* server_fc_online(char* ciphertext, char** enc_matrix, const ServerFHE* sfhe, const Metadata* data,
-            char* enc_noise, uint64_t* enc_result_size);
+    void server_fc_online(const ServerFHE* sfhe, const Metadata* data, SerialCT ciphertext, 
+            char** matrix, ServerShares* shares);
 
     /* Computes the encrypted client's share of multiplication triple */
-    char* server_triples_online(char* client_a, char* client_b, const uint64_t* a_share,
-        const uint64_t* b_share, const uint64_t* r_share, const ServerFHE* sfhe,
-        int num_triples, uint64_t* enc_size);
+    void server_triples_online(const ServerFHE* sfhe, SerialCT client_a, SerialCT client_b, ServerTriples* shares);
 
-    /* Decrypts and reshapes convolution result */
-    uint64_t** client_conv_decrypt(char* enc_result, const ClientFHE *cfhe, const Metadata *data);
+    /* Decrypt and reshape convolution results */
+    void client_conv_decrypt(const ClientFHE *cfhe, const Metadata *data, ClientShares* shares);
     
     /* Decrypts and reshapes fully-connected result */
-    uint64_t* client_fc_decrypt(char* enc_result, const ClientFHE *cfhe, const Metadata *data);
+    void client_fc_decrypt(const ClientFHE *cfhe, const Metadata *data, ClientShares *shares);
 
     /* Decrypts the clients multiplication triple share */
-    uint64_t* client_triples_decrypt(const uint64_t* a_share, const uint64_t* b_share, char* client_share, const ClientFHE* cfhe, int num_triples);
+    void client_triples_decrypt(const ClientFHE *cfhe, SerialCT c, ClientTriples *shares);
 
     /* Free client's allocated keys */
     void client_free_keys(const ClientFHE* cfhe); 
@@ -165,24 +217,27 @@ extern "C" {
     /* Free server's allocated keys */
     void server_free_keys(const ServerFHE *sfhe);
     
-    /* Free the keyshare */
-    void free_key_share(char* key_share); 
+    /* Free a serialized ciphertext */
+    void free_ct(SerialCT* ct); 
 
-    /* Free the client's state required for a single convolution */
-    void client_conv_free(const Metadata* data, char* ciphertext, uint64_t** result, Mode mode);
+    /* Free the client's state required for a convolution */
+    void client_conv_free(const Metadata* data, ClientShares* shares);
    
-    /* Free the server's state required for a single convolution*/
-    void server_conv_free(const Metadata* data, char**** masks, char** enc_noise, char* enc_result, Mode mode);
+    /* Free the server's state required for a convolution */
+    void server_conv_free(const Metadata* data, char**** masks, ServerShares* shares);
     
-    /* Free the client's state required for a single fc layer */
-    void client_fc_free(char* ciphertext, uint64_t* result);
+    /* Free the client's state required for an fc layer */
+    void client_fc_free(ClientShares* shares);
 
-    /* Free the server's state required for a single fc layer*/
-    void server_fc_free(const Metadata* data, char** enc_matrix, char* enc_noise, char* enc_result);
-
-    /* Free a ciphertext message passed for triple generation */
-    void triples_free(char* ciphertext);
+    /* Free the server's state required for an fc layer */
+    void server_fc_free(const Metadata* data, char** enc_matrix, ServerShares* shares);
     
+    /* Free the client's state required for generating triples */
+    void client_triples_free(ClientTriples* shares);
+
+    /* Free the server's state required for generating triples */
+    void server_triples_free(ServerTriples* shares);
+
 #ifdef __cplusplus
 }
 #endif

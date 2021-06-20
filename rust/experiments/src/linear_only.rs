@@ -34,7 +34,7 @@ pub fn construct_networks<R: RngCore + CryptoRng>(
         let conv = sample_conv_layer(vs, input_dims, kernel_dims, 1, Padding::Same, rng).0;
         let network = match &vs {
             Some(vs) => NeuralNetwork {
-                layers:      vec![Layer::LL(conv)],
+                layers: vec![Layer::LL(conv)],
                 eval_method: ::neural_network::EvalMethod::TorchDevice(vs.device()),
             },
             None => NeuralNetwork {

@@ -137,7 +137,7 @@ impl FromBytes for BigInteger64 {
 }
 
 pub struct IntoIter64 {
-    int:      BigInteger64,
+    int: BigInteger64,
     iterated: bool,
 }
 
@@ -166,7 +166,7 @@ impl IntoIterator for BigInteger64 {
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         Self::IntoIter {
-            int:      self,
+            int: self,
             iterated: false,
         }
     }

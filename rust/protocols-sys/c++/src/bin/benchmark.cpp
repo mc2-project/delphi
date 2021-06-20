@@ -16,10 +16,8 @@
 #include <limits>
 
 #include <math.h>
-
 #include "conv2d.h"
-#include "fc_layer.h"
-#include "im2col.h"
+#include "run_conv.cpp"
 
 using namespace std;
 
@@ -27,13 +25,13 @@ using namespace std;
  * convolution operation */
 void benchmark(int image_h, int image_w, int filter_h, int filter_w, 
         int inp_chans, int out_chans, int stride, bool padding_valid) {
-    
-    chrono::high_resolution_clock::time_point time_start, time_end;
-    
     // Create uniform distribution
+    // We only sample up to 20 bits because the plaintext evaluation
+    // doesn't support 128 bit numbers so we need to make sure 
+    // multiplication doesn't overfloow 64 bits
     random_device rd;
     mt19937 gen(rd());
-    uniform_int_distribution<int> dis(0, 1<<10);
+    uniform_int_distribution<u64> dis(0, 1<<20);
 
     // Create Eigen inputs for the plaintext and raw arrays for HE
     EImage eimage(inp_chans);
@@ -74,36 +72,12 @@ void benchmark(int image_h, int image_w, int filter_h, int filter_w,
         stride << "x" << stride << ")\n";
     cout << "--------------------------------------------\n\n";
 
-    cout << "Plaintext run ... ";
-    time_start = chrono::high_resolution_clock::now();
-    auto result = im2col_conv2D(&eimage, &efilters, padding_valid, stride, stride);
-    time_end = chrono::high_resolution_clock::now();
-    auto time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << "Done [" << time_diff.count() << " microseconds]\n\n";
+    bool pass = run_conv(image, filters, image_h, image_w, filter_h, filter_w, inp_chans, out_chans, padding_valid, stride, stride, 0);
 
-    int output_h = result[0].rows();
-    int output_w = result[0].cols();
-
-    cout << "Homomorphic run ... \n\n";
-    time_start = chrono::high_resolution_clock::now();
-    auto enc_result = HE_packed(image, filters, image_h, image_w, filter_h, filter_w, inp_chans,
-            out_chans, padding_valid, stride, stride, Mode::Output);
-    time_end = chrono::high_resolution_clock::now();
-    time_diff = chrono::duration_cast<chrono::microseconds>(time_end - time_start);
-    cout << "Done [" << time_diff.count() << " microseconds]\n\n";
-
-    //print(enc_result, out_chans, output_h, output_w);
-    bool pass = true;
-    for (int i = 0; i < out_chans; i++) {
-        for (int j = 0; j < output_h * output_w; j++) {
-            if (result[i](j/output_w,j%output_w) != enc_result[i][j])
-                pass = false;
-        }
-    }
     if (pass)
-        cout << "EQUAL\n" << endl;
+        cout << "PASS" << endl;
     else
-        cout << "FAIL\n" << endl;
+        cout << "FAIL" << endl;
 }
 
 int main()
@@ -112,7 +86,7 @@ int main()
     //benchmark(3, 3, 2, 2, 1, 1, 1, 0);
     //benchmark(32, 32, 3, 3, 16, 16, 1, 0);
     //benchmark(16, 16, 3, 3, 32, 32, 1, 0);
-    //benchmark(8, 8, 3, 3, 64, 64, 1, 1);
+    //benchmark(8, 8, 3, 3, 64, 64, 1, 0);
     
     /* Gazelle Benchmarks */
     //benchmark(28, 28, 5, 5, 5, 5, 1, 1);
@@ -121,13 +95,13 @@ int main()
     //benchmark(16, 16, 3, 3, 128, 128, 1, 1);
 
     /* ResNet Benchmarks */
-    //benchmark(32, 32, 3, 3, 3, 16, 1, 0);
-    //benchmark(32, 32, 3, 3, 16, 16, 1, 0);
-    //benchmark(32, 32, 1, 1, 16, 16, 1, 1);
-    //benchmark(32, 32, 3, 3, 16, 32, 2, 0);
-    //benchmark(16, 16, 3, 3, 32, 32, 1, 1);
-    //benchmark(16, 16, 3, 3, 32, 64, 2, 0);
-    //benchmark(8, 8, 3, 3, 64, 64, 1, 1);
+    benchmark(32, 32, 3, 3, 3, 16, 1, 0);
+    benchmark(32, 32, 3, 3, 16, 16, 1, 0);
+    benchmark(32, 32, 1, 1, 16, 16, 1, 1);
+    benchmark(32, 32, 3, 3, 16, 32, 2, 0);
+    benchmark(16, 16, 3, 3, 32, 32, 1, 1);
+    benchmark(16, 16, 3, 3, 32, 64, 2, 0);
+    benchmark(8, 8, 3, 3, 64, 64, 1, 1);
 
     /* Minionn Benchmarks */
     //benchmark(32, 32, 3, 3, 3, 64, 1, 0);

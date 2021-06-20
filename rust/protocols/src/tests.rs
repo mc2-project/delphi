@@ -5,7 +5,7 @@ use algebra::{
 };
 use crypto_primitives::{additive_share::Share, beavers_mul::FPBeaversMul};
 use io_utils::IMuxSync;
-use protocols_sys::{key_share::KeyShare, ClientFHE, ServerFHE};
+use protocols_sys::*;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 use std::net::{TcpListener, TcpStream};
@@ -52,7 +52,7 @@ mod beavers_mul {
 
     #[test]
     fn test_beavers_mul() {
-        let num_triples = 100;
+        let num_triples = 10000;
         let mut rng = ChaChaRng::from_seed(RANDOMNESS);
 
         let mut plain_x_s = Vec::with_capacity(num_triples);
@@ -108,7 +108,7 @@ mod beavers_mul {
                                 num_triples,
                                 &mut rng,
                             )
-                        },
+                        }
                         Err(_) => panic!("Connection failed"),
                     }
                 }
@@ -144,7 +144,7 @@ mod beavers_mul {
                                 &y_s_1,
                                 &triples_1,
                             );
-                        },
+                        }
                         Err(_) => panic!("Connection failed"),
                     }
                 }
@@ -353,7 +353,7 @@ mod linear {
             output_dims,
         };
         let layer = Layer::LL(LinearLayer::Conv2d {
-            dims:   layer_dims,
+            dims: layer_dims,
             params: layer_params,
         });
         let layer_info = (&layer).into();
@@ -362,7 +362,7 @@ mod linear {
             Layer::NLL(_) => unreachable!(),
         };
         let pt_layer = LinearLayer::Conv2d {
-            dims:   layer_dims,
+            dims: layer_dims,
             params: pt_layer_params,
         };
         // Done setting up parameters for the convolution
@@ -386,17 +386,26 @@ mod linear {
             crossbeam::thread::scope(|s| {
                 let server_offline_result = s.spawn(|_| {
                     let mut rng = ChaChaRng::from_seed(RANDOMNESS);
-                    let mut sfhe_op: Option<ServerFHE> = None;
 
                     for stream in server_listener.incoming() {
                         let stream = stream.expect("server connection failed!");
-                        // let mut write_stream = read_stream.try_clone().unwrap();
-                        return LinearProtocol::offline_server_protocol(
-                            &mut IMuxSync::new(vec![BufReader::new(&stream)]),
-                            &mut IMuxSync::new(vec![BufWriter::new(&stream)]),
-                            &layer.lock().unwrap(), // layer parameters
+                        let mut reader = IMuxSync::new(vec![BufReader::new(&stream)]);
+                        let mut writer = IMuxSync::new(vec![BufWriter::new(&stream)]);
+                        let sfhe: ServerFHE = crate::server_keygen(&mut reader)?;
+
+                        let layer = layer.lock().unwrap();
+                        let mut cg_handler = SealServerCG::Conv2D(server_cg::Conv2D::new(
+                            &sfhe,
+                            &layer,
+                            &layer.kernel_to_repr(),
+                        ));
+                        return LinearProtocol::<TenBitExpParams>::offline_server_protocol(
+                            &mut reader,
+                            &mut writer,
+                            layer_input_dims,
+                            layer_output_dims,
+                            &mut cg_handler,
                             &mut rng,
-                            &mut sfhe_op,
                         );
                     }
                     unreachable!("we should never exit server's loop")
@@ -404,25 +413,31 @@ mod linear {
 
                 let client_offline_result = s.spawn(|_| {
                     let mut rng = ChaChaRng::from_seed(RANDOMNESS);
-                    let mut cfhe_op: Option<ClientFHE> = None;
 
                     // client's connection to server.
-                    // TODO: Figure out why BufStream doesn't work here
                     let stream =
                         TcpStream::connect(server_addr).expect("connecting to server failed");
-                    let mut read_stream = IMuxSync::new(vec![stream.try_clone().unwrap()]);
-                    let mut write_stream = IMuxSync::new(vec![stream]);
+                    let mut reader = IMuxSync::new(vec![stream.try_clone().unwrap()]);
+                    let mut writer = IMuxSync::new(vec![stream]);
+                    let cfhe: ClientFHE = crate::client_keygen(&mut writer)?;
 
                     match &layer_info {
-                        LayerInfo::LL(_, info) => LinearProtocol::offline_client_protocol(
-                            &mut read_stream,
-                            &mut write_stream,
-                            layer_input_dims,
-                            layer_output_dims,
-                            &info,
-                            &mut rng,
-                            &mut cfhe_op,
-                        ),
+                        LayerInfo::LL(_, info) => {
+                            let mut cg_handler = SealClientCG::Conv2D(client_cg::Conv2D::new(
+                                &cfhe,
+                                info,
+                                layer_input_dims,
+                                layer_output_dims,
+                            ));
+                            LinearProtocol::offline_client_protocol(
+                                &mut reader,
+                                &mut writer,
+                                layer_input_dims,
+                                layer_output_dims,
+                                &mut cg_handler,
+                                &mut rng,
+                            )
+                        }
                         LayerInfo::NLL(..) => unreachable!(),
                     }
                 });
@@ -574,7 +589,7 @@ mod linear {
             output_dims,
         };
         let layer = Layer::LL(LinearLayer::FullyConnected {
-            dims:   layer_dims,
+            dims: layer_dims,
             params: layer_params,
         });
         let layer_info = (&layer).into();
@@ -583,7 +598,7 @@ mod linear {
             Layer::NLL(_) => unreachable!(),
         };
         let pt_layer = LinearLayer::FullyConnected {
-            dims:   layer_dims,
+            dims: layer_dims,
             params: pt_layer_params,
         };
 
@@ -610,13 +625,21 @@ mod linear {
 
                     for stream in server_listener.incoming() {
                         let stream = stream.expect("server connection failed!");
-                        // let mut write_stream = read_stream.try_clone().unwrap();
-                        return LinearProtocol::offline_server_protocol(
-                            &mut IMuxSync::new(vec![BufReader::new(&stream)]),
-                            &mut IMuxSync::new(vec![BufWriter::new(&stream)]),
-                            &layer.lock().unwrap(), // layer parameters
+                        let mut reader = IMuxSync::new(vec![BufReader::new(&stream)]);
+                        let mut writer = IMuxSync::new(vec![BufWriter::new(&stream)]);
+                        let sfhe: ServerFHE = crate::server_keygen(&mut reader)?;
+
+                        let layer = layer.lock().unwrap();
+                        let mut cg_handler = SealServerCG::FullyConnected(
+                            server_cg::FullyConnected::new(&sfhe, &layer, &layer.kernel_to_repr()),
+                        );
+                        return LinearProtocol::<TenBitExpParams>::offline_server_protocol(
+                            &mut reader,
+                            &mut writer,
+                            layer_input_dims,
+                            layer_output_dims,
+                            &mut cg_handler,
                             &mut rng,
-                            &mut sfhe_op,
                         );
                     }
                     unreachable!("we should never exit server's loop")
@@ -627,22 +650,30 @@ mod linear {
                     let mut cfhe_op: Option<ClientFHE> = None;
 
                     // client's connection to server.
-                    // TODO: Figure out why BufStream doesn't work here
                     let stream =
                         TcpStream::connect(server_addr).expect("connecting to server failed");
-                    let mut read_stream = IMuxSync::new(vec![stream.try_clone().unwrap()]);
-                    let mut write_stream = IMuxSync::new(vec![stream]);
+                    let mut reader = IMuxSync::new(vec![stream.try_clone().unwrap()]);
+                    let mut writer = IMuxSync::new(vec![stream]);
+                    let cfhe: ClientFHE = crate::client_keygen(&mut writer)?;
 
                     match &layer_info {
-                        LayerInfo::LL(_, info) => LinearProtocol::offline_client_protocol(
-                            &mut read_stream,
-                            &mut write_stream,
-                            layer_input_dims,
-                            layer_output_dims,
-                            &info,
-                            &mut rng,
-                            &mut cfhe_op,
-                        ),
+                        LayerInfo::LL(_, info) => {
+                            let mut cg_handler =
+                                SealClientCG::FullyConnected(client_cg::FullyConnected::new(
+                                    &cfhe,
+                                    info,
+                                    layer_input_dims,
+                                    layer_output_dims,
+                                ));
+                            LinearProtocol::offline_client_protocol(
+                                &mut reader,
+                                &mut writer,
+                                layer_input_dims,
+                                layer_output_dims,
+                                &mut cg_handler,
+                                &mut rng,
+                            )
+                        }
                         LayerInfo::NLL(..) => unreachable!(),
                     }
                 });

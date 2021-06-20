@@ -9,7 +9,9 @@ use algebra::{
 use crypto_primitives::{BeaversMul, BlindedSharedInputs};
 use io_utils::IMuxSync;
 use protocols_sys::{
-    client_triples::SEALClientTriples, server_triples::SEALServerTriples, ClientFHE, ServerFHE,
+    client_gen::{ClientGen, SealClientGen},
+    server_gen::{SealServerGen, ServerGen},
+    ClientFHE, ServerFHE,
 };
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -20,7 +22,7 @@ use std::{
 };
 
 pub struct BeaversMulProtocol<P: FixedPointParameters> {
-    index:  usize,
+    index: usize,
     _share: PhantomData<P>,
 }
 
@@ -60,32 +62,49 @@ where
         W: Write + Send,
         RNG: RngCore + CryptoRng,
     {
-        // Generate shares for a, b, and c
-        let mut a: Vec<FixedPoint<P>> = Vec::with_capacity(num_triples);
-        let mut b: Vec<FixedPoint<P>> = Vec::with_capacity(num_triples);
-        let mut r: Vec<FixedPoint<P>> = Vec::with_capacity(num_triples);
-        for _ in 0..num_triples {
-            a.push(FixedPoint::new(P::Field::uniform(rng)));
-            b.push(FixedPoint::new(P::Field::uniform(rng)));
-            r.push(FixedPoint::new(P::Field::uniform(rng)));
-        }
-        // Convert a, b, r to u64 Vec
-        let a_c: Vec<u64> = a.iter().map(|e| e.inner.into_repr().0).collect();
-        let b_c: Vec<u64> = b.iter().map(|e| e.inner.into_repr().0).collect();
-        let r_c: Vec<u64> = r.iter().map(|e| e.inner.into_repr().0).collect();
+        let server_gen = SealServerGen::new(&sfhe);
 
-        let mut seal_server = SEALServerTriples::new(sfhe, num_triples as i32, &a_c, &b_c, &r_c);
+        // Generate shares for a, b, and c
+        let mut a = Vec::with_capacity(num_triples);
+        let mut b = Vec::with_capacity(num_triples);
+        let mut c = Vec::with_capacity(num_triples);
+        let mut r = Vec::with_capacity(num_triples);
+        for i in 0..num_triples {
+            a.push(P::Field::uniform(rng));
+            b.push(P::Field::uniform(rng));
+            c.push(P::Field::uniform(rng));
+            r.push(a[i] * b[i] - c[i]);
+        }
+
+        let mut server_triples = server_gen.triples_preprocess(
+            a.iter()
+                .map(|e| e.into_repr().0)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            b.iter()
+                .map(|e| e.into_repr().0)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            r.iter()
+                .map(|e| e.into_repr().0)
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
 
         // Receive clients Enc(a1), Enc(b1)
         let recv_message: OfflineMsgRcv = crate::bytes::deserialize(reader)?;
         let recv_struct = recv_message.msg();
-        let a_ct = recv_struct.a_shares;
-        let b_ct = recv_struct.b_shares;
+        let mut a_ct = recv_struct.a_shares;
+        let mut b_ct = recv_struct.b_shares;
 
         // Compute and send Enc(a1b2 + b1a2 + a2b2 - r) to client
-        let client_share_ct_vec = seal_server.process(a_ct, b_ct);
+        let c_ct = server_gen.triples_online(
+            &mut server_triples,
+            a_ct.as_mut_slice(),
+            b_ct.as_mut_slice(),
+        );
         let client_msg = BeaversOfflineMsg {
-            a_shares: client_share_ct_vec,
+            a_shares: c_ct,
             b_shares: Vec::new(),
         };
         let send_message = OfflineMsgSend::new(&client_msg);
@@ -94,9 +113,9 @@ where
         let mut server_triples: Vec<Triple<P>> = Vec::with_capacity(num_triples);
         for idx in 0..num_triples {
             server_triples.push(crypto_primitives::Triple {
-                a: a[idx].inner,
-                b: b[idx].inner,
-                c: r[idx].inner,
+                a: a[idx],
+                b: b[idx],
+                c: c[idx],
             });
         }
         Ok(server_triples)
@@ -114,40 +133,48 @@ where
         num_triples: usize,
         rng: &mut RNG,
     ) -> Result<Vec<Triple<P>>, bincode::Error> {
+        let client_gen = SealClientGen::new(&cfhe);
+
         // Generate shares for a and b
-        let mut a: Vec<FixedPoint<P>> = Vec::with_capacity(num_triples);
-        let mut b: Vec<FixedPoint<P>> = Vec::with_capacity(num_triples);
+        let mut a = Vec::with_capacity(num_triples);
+        let mut b = Vec::with_capacity(num_triples);
         for _ in 0..num_triples {
-            a.push(FixedPoint::new(P::Field::uniform(rng)));
-            b.push(FixedPoint::new(P::Field::uniform(rng)));
+            a.push(P::Field::uniform(rng));
+            b.push(P::Field::uniform(rng));
         }
         // Compute Enc(a1), Enc(b1)
-        let a_c: Vec<u64> = a.iter().map(|e| e.inner.into_repr().0).collect();
-        let b_c: Vec<u64> = b.iter().map(|e| e.inner.into_repr().0).collect();
-
-        let mut seal_client = SEALClientTriples::new(cfhe, num_triples as i32, &a_c, &b_c);
-        let (a_ct_vec, b_ct_vec) = seal_client.preprocess();
+        let (mut client_triples, a_ct, b_ct) = client_gen.triples_preprocess(
+            a.iter()
+                .map(|e| e.into_repr().0)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            b.iter()
+                .map(|e| e.into_repr().0)
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
 
         // Send Enc(a1), Enc(b1) to server
         let server_message = BeaversOfflineMsg {
-            a_shares: a_ct_vec,
-            b_shares: b_ct_vec,
+            a_shares: a_ct,
+            b_shares: b_ct,
         };
         let send_message = OfflineMsgSend::new(&server_message);
         crate::bytes::serialize(writer, &send_message)?;
 
         // Receive Enc(a1b2 + b1a2 + a2b2 - r) from server
         let recv_message: OfflineMsgRcv = crate::bytes::deserialize(reader)?;
-        let recv_struct = recv_message.msg();
+        let mut recv_struct = recv_message.msg();
 
         // Compute and decrypt Enc(ab - r) and construct client triples
-        let c_share_vec = seal_client.decrypt(recv_struct.a_shares);
+        let c_share_vec = client_gen
+            .triples_postprocess(&mut client_triples, recv_struct.a_shares.as_mut_slice());
 
         let mut client_triples: Vec<Triple<P>> = Vec::with_capacity(num_triples);
         for idx in 0..num_triples {
             client_triples.push(crypto_primitives::Triple {
-                a: a[idx].inner,
-                b: b[idx].inner,
+                a: a[idx],
+                b: b[idx],
                 c: P::Field::from_repr(c_share_vec[idx].into()),
             });
         }

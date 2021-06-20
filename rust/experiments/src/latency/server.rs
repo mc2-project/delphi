@@ -11,7 +11,7 @@ use protocols::{
     gc::ServerGcMsgSend,
     linear_layer::{LinearProtocol, OfflineServerKeyRcv},
 };
-use protocols_sys::{key_share::KeyShare, ServerFHE};
+use protocols_sys::*;
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 use rayon::prelude::*;
@@ -30,7 +30,7 @@ const RANDOMNESS: [u8; 32] = [
 fn cg_helper<R: RngCore + CryptoRng>(
     layers: &[usize],
     nn: &NeuralNetwork<TenBitAS, TenBitExpFP>,
-    mut sfhe: Option<ServerFHE>,
+    sfhe: ServerFHE,
     reader: &mut IMuxSync<CountingIO<BufReader<TcpStream>>>,
     writer: &mut IMuxSync<CountingIO<BufWriter<TcpStream>>>,
     rng: &mut R,
@@ -38,22 +38,40 @@ fn cg_helper<R: RngCore + CryptoRng>(
     let mut linear_state = BTreeMap::new();
     for i in layers.iter() {
         match &nn.layers[*i] {
-            Layer::NLL(NonLinearLayer::ReLU(..)) => {},
-            Layer::NLL(NonLinearLayer::PolyApprox { .. }) => {},
+            Layer::NLL(NonLinearLayer::ReLU(..)) => {}
+            Layer::NLL(NonLinearLayer::PolyApprox { .. }) => {}
             Layer::LL(layer) => {
                 let randomizer = match &layer {
                     LinearLayer::Conv2d { .. } | LinearLayer::FullyConnected { .. } => {
-                        LinearProtocol::offline_server_protocol(
-                            reader, writer, &layer, rng, &mut sfhe,
+                        let mut cg_handler = match &layer {
+                            LinearLayer::Conv2d { .. } => SealServerCG::Conv2D(
+                                server_cg::Conv2D::new(&sfhe, layer, &layer.kernel_to_repr()),
+                            ),
+                            LinearLayer::FullyConnected { .. } => {
+                                SealServerCG::FullyConnected(server_cg::FullyConnected::new(
+                                    &sfhe,
+                                    layer,
+                                    &layer.kernel_to_repr(),
+                                ))
+                            }
+                            _ => unreachable!(),
+                        };
+                        LinearProtocol::<TenBitExpParams>::offline_server_protocol(
+                            reader,
+                            writer,
+                            layer.input_dimensions(),
+                            layer.output_dimensions(),
+                            &mut cg_handler,
+                            rng,
                         )
                         .unwrap()
-                    },
+                    }
                     // AvgPool and Identity don't require an offline phase
                     LinearLayer::AvgPool { dims, .. } => Output::zeros(dims.output_dimensions()),
                     LinearLayer::Identity { dims } => Output::zeros(dims.output_dimensions()),
                 };
                 linear_state.insert(i, randomizer);
-            },
+            }
         }
     }
 }
@@ -65,13 +83,13 @@ pub fn cg(server_addr: &str, nn: NeuralNetwork<TenBitAS, TenBitExpFP>) {
     let key_time = timer_start!(|| "Keygen");
     let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut r1).unwrap();
     let mut key_share = KeyShare::new();
-    let sfhe = Some(key_share.receive(keys.msg()));
+    let sfhe = key_share.receive(keys.msg());
     timer_end!(key_time);
 
     let key_time = timer_start!(|| "Keygen");
     let keys: OfflineServerKeyRcv = protocols::bytes::deserialize(&mut r1).unwrap();
     let mut key_share = KeyShare::new();
-    let sfhe_2 = Some(key_share.receive(keys.msg()));
+    let sfhe_2 = key_share.receive(keys.msg());
     timer_end!(key_time);
 
     r1.reset();

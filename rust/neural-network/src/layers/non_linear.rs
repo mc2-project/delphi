@@ -18,7 +18,7 @@ pub enum NonLinearLayer<F, C = F> {
     PolyApprox {
         dims: LayerDims,
         poly: Polynomial<C>,
-        _v:   PhantomData<F>,
+        _v: PhantomData<F>,
     },
 }
 
@@ -27,7 +27,7 @@ pub enum NonLinearLayerInfo<F, C> {
     ReLU,
     PolyApprox {
         poly: Polynomial<C>,
-        _v:   PhantomData<F>,
+        _v: PhantomData<F>,
     },
 }
 
@@ -61,12 +61,12 @@ where
                 for (&inp, out) in input.iter().zip(&mut output) {
                     *out = if inp > zero { inp } else { f_zero };
                 }
-            },
+            }
             PolyApprox { dims: _d, poly, .. } => {
                 for (&inp, out) in input.iter().zip(&mut output) {
                     *out = poly.evaluate(inp);
                 }
-            },
+            }
         };
         output
     }

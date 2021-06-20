@@ -194,14 +194,14 @@ fn sample_conv_layer<R: RngCore + CryptoRng>(
         output_dims,
     };
     let layer = LinearLayer::Conv2d {
-        dims:   layer_dims,
+        dims: layer_dims,
         params: layer_params,
     };
 
     let pt_layer_params =
         Conv2dParams::<TenBitExpFP, _>::new(padding, stride, kernel.clone(), bias.clone());
     let pt_layer = LinearLayer::Conv2d {
-        dims:   layer_dims,
+        dims: layer_dims,
         params: pt_layer_params,
     };
     (layer, pt_layer)
@@ -278,7 +278,7 @@ fn sample_avg_pool_layer(
     };
 
     LinearLayer::AvgPool {
-        dims:   pool_dims,
+        dims: pool_dims,
         params: avg_pool_params,
     }
 }
@@ -286,7 +286,7 @@ fn sample_avg_pool_layer(
 fn add_activation_layer(nn: &mut NeuralNetwork<TenBitAS, TenBitExpFP>, relu_layers: &[usize]) {
     let cur_input_dims = nn.layers.last().as_ref().unwrap().output_dimensions();
     let layer_dims = LayerDims {
-        input_dims:  cur_input_dims,
+        input_dims: cur_input_dims,
         output_dims: cur_input_dims,
     };
     let num_layers_so_far = nn.layers.len();

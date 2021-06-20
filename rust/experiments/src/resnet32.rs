@@ -135,7 +135,7 @@ pub fn construct_resnet_32<R: RngCore + CryptoRng>(
 
     let mut network = match &vs {
         Some(vs) => NeuralNetwork {
-            layers:      vec![],
+            layers: vec![],
             eval_method: ::neural_network::EvalMethod::TorchDevice(vs.device()),
         },
         None => NeuralNetwork {
