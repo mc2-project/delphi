@@ -39,7 +39,7 @@ rayon = { version = "1", optional = true }
 
 
 [dev-dependencies]
-blake2 = "0.7"
+blake2 = "0.9"
 criterion = "0.2"
 rand_chacha = "0.1.1"
 
