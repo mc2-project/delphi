@@ -1,4 +1,4 @@
-use io_utils::IMuxSync;
+use io_utils::imux::IMuxSync;
 
 #[inline]
 pub fn serialize<W: std::io::Write + Send, T: ?Sized>(

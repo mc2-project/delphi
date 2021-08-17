@@ -4,7 +4,7 @@ use algebra::{
     fixed_point::{FixedPoint, FixedPointParameters},
 };
 use crypto_primitives::{additive_share::Share, beavers_mul::FPBeaversMul};
-use io_utils::IMuxSync;
+use io_utils::imux::IMuxSync;
 use protocols_sys::*;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;

@@ -5,7 +5,7 @@ use algebra::{
     FpParameters, PrimeField, UniformRandom,
 };
 use crypto_primitives::additive_share::Share;
-use io_utils::IMuxSync;
+use io_utils::imux::IMuxSync;
 use neural_network::{
     layers::*,
     tensors::{Input, Output},

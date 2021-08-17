@@ -15,7 +15,7 @@ use crypto_primitives::{
     },
     Share,
 };
-use io_utils::IMuxSync;
+use io_utils::imux::IMuxSync;
 use ocelot::ot::{AlszReceiver as OTReceiver, AlszSender as OTSender, Receiver, Sender};
 use rand::{CryptoRng, RngCore};
 use rayon::prelude::*;
