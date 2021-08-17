@@ -3,7 +3,7 @@ extern crate num_cpus;
 extern crate rayon;
 use algebra::{fields::near_mersenne_64::F, FixedPoint, FixedPointParameters, Polynomial};
 use bench_utils::*;
-use io_utils::{CountingIO, IMuxSync};
+use io_utils::{counting::CountingIO, imux::IMuxSync};
 use nn::{
     layers::{
         average_pooling::AvgPoolParams,

@@ -1,7 +1,7 @@
 use crate::*;
 use algebra::{fields::PrimeField, FpParameters};
 use crypto_primitives::gc::{fancy_garbling, fancy_garbling::Wire};
-use io_utils::{CountingIO, IMuxSync};
+use io_utils::{counting::CountingIO, imux::IMuxSync};
 use neural_network::{
     layers::{LayerInfo, LinearLayerInfo, NonLinearLayerInfo},
     NeuralArchitecture,

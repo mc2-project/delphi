@@ -1,5 +1,5 @@
 use algebra::fixed_point::FixedPoint;
-use io_utils::IMuxSync;
+use io_utils::imux::IMuxSync;
 use protocols_sys::{ClientFHE, KeyShare, ServerFHE};
 use serde::{Deserialize, Serialize};
 use std::{

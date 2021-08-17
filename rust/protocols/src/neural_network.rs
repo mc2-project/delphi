@@ -16,7 +16,7 @@ use algebra::{
     FpParameters, PrimeField,
 };
 
-use io_utils::IMuxSync;
+use io_utils::imux::IMuxSync;
 
 use neural_network::{
     layers::*,

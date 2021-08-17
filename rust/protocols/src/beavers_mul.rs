@@ -7,7 +7,7 @@ use algebra::{
     FpParameters, UniformRandom,
 };
 use crypto_primitives::{BeaversMul, BlindedSharedInputs};
-use io_utils::IMuxSync;
+use io_utils::imux::IMuxSync;
 use protocols_sys::{
     client_gen::{ClientGen, SealClientGen},
     server_gen::{SealServerGen, ServerGen},
