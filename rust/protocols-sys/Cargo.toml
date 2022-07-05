@@ -24,7 +24,7 @@ cmake = { version = "0.1.42" }
 algebra= { path="../algebra" }
 crypto-primitives= { path="../crypto-primitives" }
 neural-network = { path="../neural-network" }
-ndarray = { version = "0.12", features = [ "serde-1" ] }
+ndarray = { version = "0.15.4", features = [ "serde-1" ] }
 num-traits = { version = "0.2.6"}
 rand = { version = "0.6" }
 

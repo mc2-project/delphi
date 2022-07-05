@@ -87,7 +87,7 @@ impl<'a> ServerCG for Conv2D<'a> {
             for (inp_c, tmp_i) in tmp_image.iter_mut().enumerate() {
                 *tmp_i = kernel
                     .slice(s![out_c, inp_c, .., ..])
-                    .into_slice()
+                    .to_slice()
                     .expect("Error converting kernel")
                     .as_ptr();
             }
@@ -162,7 +162,7 @@ impl<'a> ServerCG for FullyConnected<'a> {
         for row in 0..data.filter_h as usize {
             kernel_vec[row] = kernel
                 .slice(s![row, .., .., ..])
-                .into_slice()
+                .to_slice()
                 .expect("Error converting kernel")
                 .as_ptr();
         }

@@ -70,7 +70,7 @@ macro_rules! ndarray_impl {
 
             #[inline]
             fn into_iter(self) -> Self::IntoIter {
-                self.0.into_iter()
+                (&self.0).into_iter()
             }
         }
 
