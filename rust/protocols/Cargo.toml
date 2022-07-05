@@ -21,7 +21,7 @@ num-traits = { version = "0.2.6"}
 bench-utils = { path = "../bench-utils" }
 algebra = { path = "../algebra" }
 protocols-sys = { path = "../protocols-sys" }
-ndarray = { version = "0.12", features = [ "serde-1" ] }
+ndarray = { version = "0.15.4", features = [ "serde-1" ] }
 crypto-primitives = { path = "../crypto-primitives" }
 ocelot = { version = "0.3", git = "https://github.com/GaloisInc/ocelot/" }
 scuttlebutt = { version = "0.3", git = "https://github.com/GaloisInc/scuttlebutt/", features = [ "serde" ], tag = "0.3.2" }

@@ -24,7 +24,7 @@ rand_chacha = { version = "0.1.1" }
 num-traits = { version = "0.2" }
 arrayvec = { version = "0.5" }
 serde = { version = "1", features = [ "derive" ] }
-ndarray = { version = "0.12", features = [ "serde" ] }
+ndarray = { version = "0.15.4", features = [ "serde" ] }
 fancy-garbling = { version = "0.3", git = "https://github.com/pratyush/fancy-garbling/", branch = "add-serde", features = [ "serde1" ] }
 rand = { version = "0.6" }
 
