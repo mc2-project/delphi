@@ -34,6 +34,11 @@ In addition, there is a  [`rust/bench-utils`](rust/bench-utils) crate which cont
 
 ## Build guide
 
+The library requires a few dependencies to run. On Ubuntu these can be installed via:
+```bash
+sudo apt install cmake pkg-config g++ gcc libssl-dev libclang-dev
+```
+
 The library compiles on the `nightly` toolchain of the Rust compiler. To install the latest version of Rust, first install `rustup` by following the instructions [here](https://rustup.rs/), or via your platform's package manager. Once `rustup` is installed, install the Rust toolchain by invoking:
 ```bash
 rustup install nightly
@@ -114,7 +119,7 @@ python3 generate_test_images.py
 ```
 and perform inference on that image by running:
 ```bash
-cargo +nightly run --release --bin minionn-inference /tmp/model.npy {num of approx layers}
+cargo +nightly run --release --bin minionn-inference -- --weights /tmp/model.npy --layers {num of approx layers}
 ```
 
 ## License

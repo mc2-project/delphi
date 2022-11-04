@@ -276,18 +276,16 @@ mod test {
             let garbled_eval_results = ev.eval(&mut c, &xs, &ys).unwrap();
 
             let evaluated_results = c.eval_plain(&garbler_inputs, &evaluator_inputs).unwrap();
-            assert_eq!(
-                util::u128_from_bits(&evaluated_results),
-                res_should_be,
+            assert!(
+                util::u128_from_bits(&evaluated_results).abs_diff(res_should_be) <= 1,
                 "Iteration {}, Pre-ReLU value is {}, value should be {}, {:?}",
                 i,
                 n1,
                 res_should_be_fp,
                 res_should_be_fp
             );
-            assert_eq!(
-                util::u128_from_bits(&garbled_eval_results),
-                res_should_be,
+            assert!(
+                util::u128_from_bits(&garbled_eval_results).abs_diff(res_should_be) <= 1,
                 "Iteration {}, Pre-ReLU value is {}, value should be {}, {:?}",
                 i,
                 n1,

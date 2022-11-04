@@ -97,4 +97,5 @@ name = "gc-server"
 path = "src/latency/gc/server.rs"
 
 [features]
-timer = ["protocols/timer"]
+default = [ "timer" ]
+timer = [ "protocols/timer" ]
