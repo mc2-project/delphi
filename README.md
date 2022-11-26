@@ -70,7 +70,7 @@ Let's walk through a full example of using Delphi with the pretrained MiniONN mo
 
 Using Python3.6/7, install the following packages:
 ```bash
-pip install ray[tune]==0.8.0 requests scipy tensorflow==1.15.0 
+pip install ray[tune]==0.8.4 requests scipy tensorflow==1.15.0 
 ```
 Optionally, visualizing results requires the `tensorboard` package:
 ```bash
