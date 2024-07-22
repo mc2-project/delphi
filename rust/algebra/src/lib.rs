@@ -21,7 +21,6 @@
     unused_must_use,
     unused_mut,
     unused_unsafe,
-    private_in_public,
     unsafe_code
 )]
 #![deny(unsafe_code)]
